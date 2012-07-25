@@ -1,0 +1,444 @@
+'''
+Created on 9 Sep 2010
+
+@author: tcezard
+'''
+import os
+from wiki_communication import LOAD_PAGE_LABEL, LOAD_PAGE_CONTENT, LOAD_PAGE_LINK
+from wiki_communication.wiki_pages_utils import get_all_run_page_titles,\
+    get_run_page_from_id, get_run_page_from_title
+from utils import utils_logging, ask_for_help, copy_file_across
+import logging
+
+from wiki_communication.run_page_labels import READ_STATUS_INDEXSE_LABEL, READ_STATUS_INDEXPE_LABEL,\
+    READ_STATUS_SINGLE_LABEL, READ_STATUS_PAIRED_LABEL, RUN_STATUS_RUNNING_LABEL,\
+    RUN_STATUS_FINISHED_LABEL, RTA_VERSIONS_LABEL, CYCLE_NUMBER_LABEL,\
+    ILLUMINA_INSTRUMENT_BART_LABEL, ILLUMINA_INSTRUMENT_VERSION_GAIIX_LABEL, ILLUMINA_INSTRUMENT_FRED_LABEL,\
+    ILLUMINA_INSTRUMENT_ALAN_LABEL, ILLUMINA_INSTRUMENT_HISEQ1_LABEL,\
+    ILLUMINA_HISEQ_STAGE_B_LABEL, ILLUMINA_HISEQ_STAGE_A_LABEL,\
+    ILLUMINA_INSTRUMENT_HISEQ2_LABEL, ILLUMINA_PLATFORM_HISEQ_LABEL,\
+    ILLUMINA_PLATFORM_GA_LABEL
+import utils
+import command_runner
+from wiki_communication.wiki_ids import get_run_id_from_page_title,\
+    get_all_infos_from_solexa_page_title
+import glob
+import re
+from wiki_communication.wiki_page_labels import parse_run_labels
+from utils.utils_param import get_pipeline_places
+from wiki_communication.run_page_writer import get_labels_from_run
+import sys
+from optparse import OptionParser
+import pprint
+
+
+ignore_dir=[]
+
+def check_for_new_run(no_email = False, no_action=False, test=False, master_run_dir=None):
+    pipeline_places = get_pipeline_places()
+    if master_run_dir is None:
+        master_run_dir = pipeline_places.get_illumina_run_dir()
+    tmp_dir=os.path.expanduser('~/temp/')
+    if not os.path.exists(tmp_dir):
+        utils.createDirectories('', [tmp_dir])
+    webserver_run_info = pipeline_places.get_webserver_run_info()
+    if len(webserver_run_info.split(':'))>1:
+        webserver, run_info_dest_dir = webserver_run_info.split(':')
+    else:
+        webserver=None
+        run_info_dest_dir = webserver_run_info
+        
+    mailhost='smtp.staffmail.ed.ac.uk'
+    reporter_email='tcezard@staffmail.ed.ac.uk'
+    notification_emails=['tcezard@staffmail.ed.ac.uk','urmi.trivedi@ed.ac.uk','gkaur@staffmail.ed.ac.uk',
+                         'sbridget@staffmail.ed.ac.uk','genepool-solexa@ed.ac.uk', 'genepool-manager@ed.ac.uk']
+    if test:
+        notification_emails=['tcezard@staffmail.ed.ac.uk']
+    subject_template_created='[Wiki automation] A run page titled %s was created'
+    body_template_created='''Hi all,
+ 
+A page %s have been created at %s
+Could you have a look and fill the required information in?'''
+    subject_template_updated='[Wiki automation] A run page titled %s was updated'
+    body_template_updated='''Hi all,
+ 
+The page %s have been updated at %s.'''
+    
+    logging.info('\n\n*********************************\nCheck new runs')
+    
+    files_and_dirs = os.listdir(master_run_dir)
+    all_page_titles=[]
+    all_prexisting_run_ids=[]
+    pages_and_parents = get_all_run_page_titles(type='SOLEXA')
+    for parent, page_title in pages_and_parents:
+        all_page_titles.append(page_title)
+        all_prexisting_run_ids.append(get_run_id_from_page_title(page_title))
+        #print page_title, get_run_id_from_page_title(page_title)
+    
+    #Gather all the Run dir
+    run_id_to_run_dir={}
+    for dir in files_and_dirs:
+        full_path_dir=os.path.join(master_run_dir,dir)
+        if os.path.isdir(full_path_dir) and is_dir_a_run_dir(full_path_dir) and dir not in ignore_dir:
+            #if dir != '110405_SN182_0212_AB0521ABXX':
+            #    continue
+            #date, machine_name, number, flowcell = get_all_infos_from_solexa_page_title(dir)
+            run_id = get_run_id_from_page_title(dir)
+            #if not run_id in all_prexisting_run_ids:
+            if run_id_to_run_dir.has_key(run_id):
+                run_id_to_run_dir[run_id].append(full_path_dir)
+            else:
+                run_id_to_run_dir[run_id]=[full_path_dir]
+                
+    #Find the newest run directory for each id
+    for run_id in run_id_to_run_dir.keys():
+        newest_dir=run_id_to_run_dir.get(run_id)[0]
+        for full_path_dir in run_id_to_run_dir.get(run_id)[1:]:
+            if os.path.getmtime(full_path_dir) > os.path.getmtime(newest_dir):
+                newest_dir=full_path_dir
+        run_id_to_run_dir[run_id]=newest_dir
+        
+    for run_id in run_id_to_run_dir.keys():
+        #if run_id != '101101_806GEABXX': 
+        #    continue
+        run_dir=run_id_to_run_dir.get(run_id)
+        if not run_id:
+            logging.error('The run %s cannot create a valid id'%(os.path.basename(run_dir)))
+            continue
+        wiki_run_page = get_run_page_from_id(run_id, allow_blank_page=False)
+        #is there a wiki page for these run?
+        need_upload = False
+        if wiki_run_page:
+            page_title = wiki_run_page.page_title
+            #wiki_run_page.load()
+        else:
+            page_title = os.path.basename(run_dir)
+            wiki_run_page = get_run_page_from_title(page_title, type='SOLEXA', allow_blank_page=True)
+            need_upload=True
+            logging.debug('need upload to create the page %s from id %s'%(run_dir, run_id))
+            subject_template = subject_template_created
+            body_template = body_template_created
+        
+        logging.info('Test %s'%wiki_run_page.page_title)
+        
+        #extract the information from the run directory
+        all_labels, status_files_dict = get_label_info_for_run(run_dir)
+        machine_start = wiki_run_page.run.get_machine_start()
+        if not machine_start:
+            wiki_run_page.run.machine_start = status_files_dict.get('RunStarted')
+        
+        #Set the run status as running by default if nothing else is set
+        current_wiki_status = wiki_run_page.run.get_run_status()
+        if not current_wiki_status and RUN_STATUS_FINISHED_LABEL not in all_labels:
+            all_labels.append(RUN_STATUS_RUNNING_LABEL)
+        
+        #Set the run status as finished if nothing it was set to running before and the run is finished
+        if current_wiki_status and current_wiki_status !=  RUN_STATUS_RUNNING_LABEL  and\
+        RUN_STATUS_FINISHED_LABEL in all_labels:
+            all_labels.remove(RUN_STATUS_FINISHED_LABEL)
+        
+        all_old_labels = wiki_run_page.labels
+        
+        if len(set(all_labels).difference(all_old_labels))>0:
+            parsed_labels = parse_run_labels(all_labels)
+            wiki_run_page.run.add_info(**parsed_labels)
+            a,b = get_labels_from_run(wiki_run_page.run)
+            if not need_upload:
+                subject_template = subject_template_updated
+                body_template = body_template_updated
+            need_upload=True
+            logging.debug('need upload to update the page with labels: %s'%(', '.join(set(all_labels).difference(all_old_labels))))
+        #need_upload = False
+        
+        if need_upload:
+            if not no_action:
+                logging.info('upload to the wiki')
+                if not test:
+                    url, report = wiki_run_page.upload_to_wiki(test_wiki=False)
+                else:
+                    url, report = wiki_run_page.upload_to_wiki(test_wiki=True)
+                if not no_email:
+                    run_name_array = []
+                    run_name_array.append('machine: %s'%(' -- '.join(wiki_run_page.run.get_machine_labels())))
+                    run_name_array.append('%s read of length %s'%(wiki_run_page.run.get_read_status(), wiki_run_page.run.get_number_cycle()))
+                    ask_for_help(mailhost, reporter_email, notification_emails, 
+                                 subject=subject_template%(page_title), body=body_template%(page_title,url) + '\n'+\
+                                 '\n'.join(run_name_array) + '\n\nReport:\n%s'%report)
+            else:
+                logging.info('Should upload to the wiki but no_action is set')
+        
+        if current_wiki_status == RUN_STATUS_RUNNING_LABEL or RUN_STATUS_RUNNING_LABEL in all_labels:
+            if not no_action:
+                copy_status_file_to_server(page_title, source_dir=master_run_dir,
+                                           tmp_dir=tmp_dir,
+                                           server=webserver, 
+                                           dest_dir=run_info_dest_dir)
+            else:
+                logging.info('Should copy the status file to the webserver but no_action is set')
+    
+        
+
+def get_label_info_for_run(run_dir):
+    page_title = os.path.basename(run_dir)
+    all_labels=[]
+    platform = None
+    instrument=None
+    instrument_version=None
+    hiseq_stage = None
+    date, machine_name, number, flowcell = get_all_infos_from_solexa_page_title(page_title)
+    if machine_name and machine_name.startswith('HWUSI-EAS721'):
+        platform = ILLUMINA_PLATFORM_GA_LABEL
+        instrument= ILLUMINA_INSTRUMENT_BART_LABEL
+        instrument_version=ILLUMINA_INSTRUMENT_VERSION_GAIIX_LABEL
+        ILLUMINA_HISEQ_STAGE_A_LABEL
+    elif machine_name and machine_name.startswith('HWI-EAS222'):
+        platform = ILLUMINA_PLATFORM_GA_LABEL
+        instrument= ILLUMINA_INSTRUMENT_FRED_LABEL
+        instrument_version=ILLUMINA_INSTRUMENT_VERSION_GAIIX_LABEL
+    elif machine_name  and machine_name.startswith('HWUSI-EAS243L'):
+        platform = ILLUMINA_PLATFORM_GA_LABEL
+        instrument= ILLUMINA_INSTRUMENT_ALAN_LABEL
+        instrument_version=ILLUMINA_INSTRUMENT_VERSION_GAIIX_LABEL
+    elif machine_name and machine_name.startswith('SN182A'):
+        platform = ILLUMINA_PLATFORM_HISEQ_LABEL
+        instrument= ILLUMINA_INSTRUMENT_HISEQ1_LABEL
+        hiseq_stage = ILLUMINA_HISEQ_STAGE_A_LABEL
+    elif machine_name and machine_name.startswith('SN182B'):
+        platform = ILLUMINA_PLATFORM_HISEQ_LABEL
+        instrument= ILLUMINA_INSTRUMENT_HISEQ1_LABEL
+        hiseq_stage = ILLUMINA_HISEQ_STAGE_B_LABEL
+    elif machine_name and machine_name.startswith('SN427A'):
+        platform = ILLUMINA_PLATFORM_HISEQ_LABEL
+        instrument= ILLUMINA_INSTRUMENT_HISEQ2_LABEL
+        hiseq_stage = ILLUMINA_HISEQ_STAGE_A_LABEL
+    elif machine_name and machine_name.startswith('SN427B'):
+        platform = ILLUMINA_PLATFORM_HISEQ_LABEL
+        instrument= ILLUMINA_INSTRUMENT_HISEQ2_LABEL
+        hiseq_stage = ILLUMINA_HISEQ_STAGE_B_LABEL
+    else:
+        logging.error('Unknown machine names: %s'%machine_name)
+    if platform:
+        all_labels.append(platform)
+    if instrument: 
+        all_labels.append(instrument)
+    if instrument_version: 
+        all_labels.append(instrument_version)
+    if hiseq_stage: 
+        all_labels.append(hiseq_stage)
+    
+    status_files_dict =   parse_status_xml(run_dir)
+    software = status_files_dict.get('Software') 
+    if software is not None:
+        rta = None
+        version = software.replace('.','_').split()[2]
+        for version_label in RTA_VERSIONS_LABEL:
+            if version_label.endswith(version):
+                rta = version_label
+                break
+        if rta:
+            all_labels.append(rta)
+        else:
+            logging.error('Unknown version of RTA: %s -- %s'%(software, software.split()[2].replace('.','_')))
+    
+    tot_num_cycles = status_files_dict.get('NumCycles')
+    
+    if tot_num_cycles is not None:
+        tot_num_cycles = int(tot_num_cycles)
+    current_nb_cycle = get_current_cycle_for_run(run_dir)
+    num_cycles = None
+    read_status = None
+    if not status_files_dict.get('NumberOfReads') is None:
+        if status_files_dict.get('IsPairedEndRun') == 'True':
+            if status_files_dict.get('NumberOfReads') == '2':
+                read_status = READ_STATUS_PAIRED_LABEL
+                num_cycles = tot_num_cycles/2
+            elif status_files_dict.get('NumberOfReads') == '3':
+                read_status = READ_STATUS_INDEXPE_LABEL
+                num_cycles = (tot_num_cycles -8)/2
+        else:
+            if status_files_dict.get('NumberOfReads') == '2':
+                read_status = READ_STATUS_INDEXSE_LABEL
+                num_cycles = tot_num_cycles-8
+            elif status_files_dict.get('NumberOfReads') == '1':
+                read_status = READ_STATUS_SINGLE_LABEL
+                num_cycles = tot_num_cycles
+        if read_status:
+            all_labels.append(read_status)
+    if (not num_cycles is None) and str(num_cycles) in CYCLE_NUMBER_LABEL:
+        all_labels.append(str(num_cycles))
+    
+    if status_files_dict.get('TilesPerLane'):
+        number_tile =  int(status_files_dict.get('TilesPerLane'))
+        if is_run_finished(run_dir, tot_num_cycles, number_tile):
+            all_labels.append(RUN_STATUS_FINISHED_LABEL)
+            
+    
+    return all_labels, status_files_dict     
+    
+    
+def copy_status_file_to_server(run_dir_title, source_dir, tmp_dir, server, dest_dir):
+    run_dir = os.path.join(source_dir, run_dir_title)
+    
+    if os.path.isdir(run_dir):
+        tar_file = os.path.join(tmp_dir, '%s_status.tar.gz'%run_dir_title)
+        data_dir=os.path.join(run_dir, 'Data')
+        status_files='Status*'
+        report_dir='reports'
+        command = 'cd %s; tar -czf %s %s %s'%(data_dir, tar_file,status_files,report_dir )
+        command_runner.run_command(command)
+        run_dir=os.path.join(dest_dir, get_run_id_from_page_title(run_dir_title))
+        utils.createDirectories('', [run_dir], server)
+        copy_file_across(source=tar_file, destination=run_dir, server_destination=server, overwrite=True)
+        command = 'ssh %s "cd %s; tar -xzf %s"'%(server, run_dir,os.path.basename(tar_file))
+        command_runner.run_command(command)
+        command = 'rm -f %s'%(tar_file)
+        command_runner.run_command(command)
+        command = 'ssh %s "rm -f %s"'%(server, os.path.join(run_dir,os.path.basename(tar_file)))
+        command_runner.run_command(command)
+        command = 'ssh %s "chmod -R 775 %s"'%(server, run_dir)
+        command_runner.run_command(command)
+        
+def is_dir_a_run_dir(parent_dir):
+    """Validate that the given directory is an illumina run directory.
+    Check the existence of some directories."""
+    valid=True
+    #file_to_find=['Data/reports/FWHM/Chart_10.xml']
+    file_to_find=['RunInfo.xml']
+    #file_to_find=[]
+    dir_to_find=['Data','Config']
+    for file in file_to_find:
+        #print '%s is found = %s'%(os.path.join(parent_dir,file),os.path.isfile(os.path.join(parent_dir,file)))
+        valid = valid and os.path.isfile(os.path.join(parent_dir,file))
+    for dir in dir_to_find:
+        #print '%s is found = %s'%(os.path.join(parent_dir,dir),os.path.isdir(os.path.join(parent_dir,dir)))
+        valid = valid and os.path.isdir(os.path.join(parent_dir,dir))
+    return valid
+
+def parse_status_xml(run_dir):
+    """Parse the status.xml and extract some of its information."""
+    from xml.dom import minidom
+    status_file = os.path.join(run_dir,'Data','Status.xml')
+    if not  os.path.exists(status_file):
+        status_file = os.path.join(run_dir, 'Data', 'reports', 'Status.xml')
+    dict_data = {'Software': None, 'RunStarted': None,
+                 'NumCycles': None,'NumberOfReads': None,
+                 'TilesPerLane': None,'ControlLane': None,
+                 'IsPairedEndRun':None}
+    if os.path.exists(status_file):
+        dom = minidom.parse(status_file)
+        for key in dict_data.keys():
+            dict_data[key]=dom.getElementsByTagName(key)[0].childNodes[0].data
+    return dict_data
+
+def get_current_cycle_for_run(run_dir):
+    """Return the current cycle the machine has done based on the chart output in FWHM directory."""
+    chart_files=glob.glob(os.path.join(run_dir,'Data/reports/FWHM/Chart_*.xml'))
+    max=0
+    for file in chart_files:
+        match = re.match(r'.+?Chart_(\d+).xml',file)
+        if match:
+            tmp = int(match.group(1))
+            if tmp > max:
+                max=tmp
+    return max
+
+
+def is_run_finished(run_dir, max_num_cycle, number_tile):
+    """Check the files in the intensity folder to see if the last files have been written."""
+    finished = True
+    all_files = glob.glob('%s/Data/Intensities/BaseCalls/L*/C%s*'%(run_dir, max_num_cycle))
+    if len(all_files)>0:
+        for dir in all_files:
+            number_tile_finished = len(glob.glob(os.path.join(dir,'*.bcl')))
+            if number_tile==number_tile_finished :
+                finished = True
+            elif number_tile==68 and number_tile_finished == 32:
+                finished = True
+            else:
+                logging.debug('only %s bcl files found in %s'%(number_tile_finished, dir))
+                finished = False
+    else:
+        logging.debug("Path Not found: %s"%('%s/Data/Intensities/BaseCalls/L*/C%s*'%(run_dir, max_num_cycle)))
+        finished = False
+    return finished
+        
+            
+            
+def main():
+    #initialise the logging
+    log_file = os.path.join(os.path.expanduser('~'),'check_for_new_run.log')
+    formatter=logging.Formatter('%(levelname)s {%(asctime)s}: %(message)s')
+    utils_logging.init_logging(output_level=logging.DEBUG, file_level=logging.INFO,
+                               log_file_name=log_file, overwrite=False, formatter=formatter)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,dummy) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    command_runner.set_command_to_run_localy()
+    try:
+        check_for_new_run(no_email=options.no_email, no_action=options.no_action, test=options.test)
+    except BaseException, e:
+        logging.exception("error")
+        mailhost='smtp.staffmail.ed.ac.uk'
+        reporter_email='tcezard@staffmail.ed.ac.uk'
+        notification_emails=['tcezard@staffmail.ed.ac.uk']
+        subject='An error occurred in check_for_new_run script !!'
+        body='An error occurred while running check_for_new_run.py\nHere is the exception report:'+str(e)
+        ask_for_help(mailhost, reporter_email, notification_emails, subject, body)
+        
+    
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog --no_email --no_action"""
+    description = """"""
+    
+    prog_version='0'
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("--no_email",dest="no_email",action="store_true",default=False,
+                         help="No email will be sent. Default: %default")
+    optparser.add_option("--no_action",dest="no_action",action="store_true",default=False,
+                         help="No action will be performed (upload copy or email). Default: %default")
+    optparser.add_option("--test",dest="test",action="store_true",default=False,
+                         help="The wiki page will be uploaded on the test wiki and the email sent only to tcezard. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    # Test output_file
+    return arg_pass
+
+if __name__=='__main__':
+    main()
+
+#if __name__=='__main__':
+#    log_file = os.path.join(os.path.expanduser('~'),'check_for_new_run.log')
+#    formatter=logging.Formatter('%(levelname)s {%(asctime)s}: %(message)s')
+#    utils_logging.init_logging(output_level=logging.DEBUG, file_level=logging.INFO,
+#                               log_file_name=log_file, overwrite=False, formatter=formatter)
+#    command_runner.set_command_to_run_localy()
+#    check_for_new_run()
+    
+if __name__=='1__main__':
+    utils_logging.init_logging(logging.DEBUG)
+    run_dir_title = '120502_SN182_0327_BD0R88ACXX'
+    run_dir = os.path.join('/mnt/gaII/', run_dir_title)
+    status = parse_status_xml(run_dir)
+    print status.get('NumCycles'), status.get('TilesPerLane')
+    print is_run_finished(run_dir, status.get('NumCycles'), int(status.get('TilesPerLane')))
+    
+    #copy_status_file_to_server(run_dir_title,
+    #                           '/home/tcezard/temp/',
+    #                           'genepool-web1.bio.ed.ac.uk' ,
+    #                           '/data/Gene_Pool/run_info/')

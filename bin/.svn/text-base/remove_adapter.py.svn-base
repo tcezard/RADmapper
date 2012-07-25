@@ -1,0 +1,219 @@
+'''
+Created on Nov 11, 2010
+
+@author: tcezard
+'''
+import command_runner
+import os
+from utils.utils_param import get_pipeline_places, get_pipeline_parameters
+from utils.parameters import Config_file_error
+import logging
+from get_data_from_seqarchive import get_files_from_seq_archive, get_link_from_seq_archive
+from wiki_communication import get_wiki_run
+from utils import utils_logging
+from utils.utils_commands import shellize_file_name
+import utils
+from wiki_communication.wiki_pages_utils import get_run_page_from_title,\
+    get_all_run_page_titles
+from wiki_communication.wiki_exceptions import Wiki_Parser_Error
+from run_quality_check import load_qc_in_run_page
+from optparse import OptionParser
+import threading
+import sys
+
+
+def run_all_adapter_detection(output_dir, overwrite):
+    all_page_parents_and_titles = get_all_run_page_titles(type='SOLEXA')
+    options_to_add=[]
+    if overwrite:
+        options_to_add.append('--force')
+    for parent_page_title, run_page_title in all_page_parents_and_titles:
+        if run_page_title.startswith('08') or run_page_title.startswith('09'):
+            continue
+        command='python %s -r "%s" -o %s %s'%(sys.argv[0],run_page_title, output_dir, ' '.join(options_to_add))
+        print command
+
+def detect_adapter_command(fastq_file, fasta2fastq_bin, blastall_bin, adtapter_database, read_with_adapter):
+    
+    if fastq_file.endswith('.gz'):
+        start_command='gunzip -c '
+    else:
+        start_command='cat '
+    
+    command = '''%s %s | %s | %s -p blastn -d %s -e 1e-4 -m 8 -a 8 -F f | awk '{print substr($1,1,length($1)-2)}' | sort -u > %s'''
+    command = command%(start_command, fastq_file, fasta2fastq_bin, blastall_bin, adtapter_database, read_with_adapter)
+    return command
+    
+    
+def detect_adapter_from_fastq(run_element, fastq_files, dest_dir, overwrite=False):
+    
+    try:
+        pipeline_places = get_pipeline_places()
+        adtapter_database = pipeline_places.get_illumina_adapter_sequences()
+    except Config_file_error, e:
+        adtapter_database='/ifs/seqarchive/adapters/adapters.fasta'
+        logging.warning("use %s as default adapter database"%(adtapter_database))
+    try:
+        pipeline_param = get_pipeline_parameters()
+        blast_dir=pipeline_param.get_blast_dir()
+        fasta2fastq_bin=pipeline_param.get_fasta2fastq_bin()
+    except Config_file_error, e:
+        logging.warning("You'll need to have blastall and sol2fasta.pl in your path")
+        blast_dir=''
+        fasta2fastq_bin='sol2fasta.pl'
+    blastall_bin=os.path.join(blast_dir,'blastall')
+    
+    read_with_adapter=os.path.join(dest_dir, run_element.id+'_with_adapter.txt')
+    if len(fastq_files)==1:
+        #single end
+        command = detect_adapter_command(fastq_files[0], fasta2fastq_bin, blastall_bin, adtapter_database, read_with_adapter)
+        return_code = command_runner.run_command(command)
+        
+    elif len(fastq_files)==2:
+        #paired end
+        read_with_adapter1=read_with_adapter+'.1'
+        read_with_adapter2=read_with_adapter+'.2'
+        command1 = detect_adapter_command(fastq_files[0], fasta2fastq_bin, blastall_bin, adtapter_database, read_with_adapter1)
+        command2 = detect_adapter_command(fastq_files[1], fasta2fastq_bin, blastall_bin, adtapter_database, read_with_adapter2)
+        process1 = command_runner.run_command_no_wait(command1)
+        process2 = command_runner.run_command_no_wait(command2)
+        return_code=process1.wait()
+        logging.info("pid=%s returned %s"%(process1.pid,return_code))
+        return_code=process2.wait()
+        logging.info("pid=%s returned %s"%(process2.pid,return_code))
+        
+        command = 'cat %s %s | sort -u > %s'%(read_with_adapter1,read_with_adapter2,read_with_adapter) 
+        command_runner.run_command(command)
+        command = 'rm -f %s %s'%(read_with_adapter1,read_with_adapter2)
+        command_runner.run_command(command)
+    else:
+        logging.error('%s fastq file(s) found in seqarchive '%len(fastq_files))
+    
+    
+class Threaded_adapter_detection(threading.Thread):
+    def __init__(self, run_element, dest_dir, overwrite):
+        self.run_element = run_element
+        self.dest_dir = dest_dir
+        self.overwrite = overwrite
+        threading.Thread.__init__ ( self )
+        
+    def run(self):
+        detect_adapter_in_seqarchive(self.run_element, self.dest_dir, self.overwrite)
+    
+def detect_adapter_in_seqarchive(run_element, dest_dir, overwrite=False):
+    read_with_adapter=os.path.join(dest_dir, run_element.id+'_with_adapter.txt')
+    if not utils.checkFile(read_with_adapter,server=None) or overwrite:
+        fastq_files = get_link_from_seq_archive(run_element, dest_dir, server_destination=None, overwrite=overwrite)
+        detect_adapter_from_fastq(run_element, fastq_files, dest_dir, overwrite)
+        command = 'rm -f %s'%(' '.join(fastq_files))
+        command_runner.run_command(command)
+    else:
+        logging.warning('%s exists use --force to overwrite'%read_with_adapter)
+
+def run_adapter_detection(output_dir, run_page_title, overwrite=False):
+    run_dir=os.path.join(output_dir,shellize_file_name(run_page_title))
+    utils.createDirectories('',[run_dir])
+    log_file_name = os.path.join(run_dir,shellize_file_name(run_page_title)+'.txt')
+    utils_logging.init_logging(output_level=None, log_file_name=log_file_name, overwrite=overwrite)
+    
+    try :
+        run_page=get_run_page_from_title(run_page_title)
+    except Wiki_Parser_Error, e:
+        run_page=None
+        logging.error('%s on %s'%(str(e), run_page_title))
+        return 
+    finally:
+        utils_logging.remove_logging_file_handler(log_file_name)
+    all_threads=[]
+    for run_element in run_page.run.get_run_elements():
+        print run_element
+        try:
+            thread = Threaded_adapter_detection(run_element, dest_dir=run_dir, overwrite=overwrite)
+            all_threads.append(thread)
+            thread.start()
+        except StandardError:
+            logging.exception('CRASH')
+    for thread in all_threads:
+        thread.join()
+    try:
+        load_qc_in_run_page(run_dir, run_page)
+        logging.info('upload run page to wiki')
+        url,report = run_page.upload_to_wiki(test_wiki=True)
+        print url
+    except StandardError:
+        logging.exception('CRASH')
+    utils_logging.remove_logging_file_handler(log_file_name)
+
+def remove_adapter(fastq_file, with_adaptater_file=None):
+    pass
+    
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    command_runner.set_command_to_run_localy()
+    if options.run_page_title:
+        run_adapter_detection(options.output_dir, options.run_page_title, options.overwrite)
+    else:
+        run_all_adapter_detection(options.output_dir, options.overwrite)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script is a template to of a python script that include help and option's checking.
+    The requirement and assumption of the script can be described here.
+    A link to another documentation can also be added here."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-r","--run_page_title",dest="run_page_title",type="string",
+                         help="Title of the run page on the wiki. Default: %default")
+    optparser.add_option("-o","--output",dest="output_dir",type="string",
+                         help="Path to a directory where the run directory will be created. Default: %default")
+    optparser.add_option('-f',"--force",dest="overwrite",action="store_true",default=False,
+                         help="This flag force the script to overwrite. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.output_dir:
+        logging.error("You must specify an output directory.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()
+
+    
+    
+if __name__=='1__main__':
+    command_runner.set_command_to_run_localy()
+    utils_logging.init_logging(logging.DEBUG)
+    dest_dir='/home/tcezard/run_quality_data/'
+    run_id='101013_62C6DAAXX'
+    run = get_wiki_run(run_id)
+    for run_element in run.get_run_elements():
+        detect_adapter_in_seqarchive(run_element, dest_dir)
+    #fastq_file = '/ifs/seqarchive/101013_62C6DAAXX/101013_62C6DAAXX_4_1.txt.gz'
+    #detect_adapter(fastq_file)
+    

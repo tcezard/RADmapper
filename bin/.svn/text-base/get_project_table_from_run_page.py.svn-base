@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+'''
+Created on 19 Jul 2010
+
+@author: tcezard
+'''
+import sys, logging
+from optparse import OptionParser
+import utils
+from utils import utils_logging
+
+from wiki_communication.wiki_pages_utils import get_run_page_from_title
+
+
+def get_project_table_from_run_page(run_page_titles, test_wiki=False):
+    all_projects={}
+    for run_page_title in run_page_titles:
+        print run_page_title
+        #load the run page
+        run_page = get_run_page_from_title(run_page_title, type='SOLEXA')
+        
+        if run_page:
+            #Check all project associated (This should load the project pages)
+            for run_element in run_page.run.get_run_elements():
+                project = run_element.get_project()
+                if project:
+                    all_projects[project.id]=project
+        else:
+            print "Can't find a valid run page for %s"%run_page_title
+    #print the project title and the table.
+    for project in all_projects.values():
+        print project.get_project_page_title()
+        logging.info('upload page')
+        url, report = project.project_page.upload_to_wiki(test_wiki=test_wiki)
+        logging.info('page %s is updated'%url)
+        logging.info('report: %s'%report)
+
+
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    if options.debug:
+        utils_logging.init_logging(logging.DEBUG)
+    run_pages=[options.run_page]
+    if len(args):
+        run_pages.extend(args)
+    get_project_table_from_run_page(run_pages, test_wiki=options.test_wiki)
+
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-r page_title>"""
+    description = """This script Print on the screen a table that should be uploaded on the project page."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-r","--run_page",dest="run_page",type="string",
+                         help="The run page as specified on the wiki. Default: %default")
+    optparser.add_option("-t","--test_wiki",dest="test_wiki",action="store_true",default=False,
+                         help="This uses the test wiki to upload the project page. Default: %default")
+    optparser.add_option("--debug",dest="debug",action="store_true",default=False,
+                         help="Show the debug output. Default: %default")
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    # Test output_file
+    if not options.run_page:
+        logging.error("You must specify a run page.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

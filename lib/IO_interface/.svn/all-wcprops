@@ -1,0 +1,35 @@
+K 25
+svn:wc:ra_dav:version-url
+V 93
+/repo/biology/genepool/!svn/ver/386/user/tcezard/pipeline_tools_python/trunk/lib/IO_interface
+END
+annotation_loader.py
+K 25
+svn:wc:ra_dav:version-url
+V 114
+/repo/biology/genepool/!svn/ver/415/user/tcezard/pipeline_tools_python/trunk/lib/IO_interface/annotation_loader.py
+END
+__init__.py
+K 25
+svn:wc:ra_dav:version-url
+V 105
+/repo/biology/genepool/!svn/ver/263/user/tcezard/pipeline_tools_python/trunk/lib/IO_interface/__init__.py
+END
+exon_loader.py
+K 25
+svn:wc:ra_dav:version-url
+V 108
+/repo/biology/genepool/!svn/ver/331/user/tcezard/pipeline_tools_python/trunk/lib/IO_interface/exon_loader.py
+END
+vcfIO.py
+K 25
+svn:wc:ra_dav:version-url
+V 102
+/repo/biology/genepool/!svn/ver/450/user/tcezard/pipeline_tools_python/trunk/lib/IO_interface/vcfIO.py
+END
+samIterator.py
+K 25
+svn:wc:ra_dav:version-url
+V 108
+/repo/biology/genepool/!svn/ver/450/user/tcezard/pipeline_tools_python/trunk/lib/IO_interface/samIterator.py
+END

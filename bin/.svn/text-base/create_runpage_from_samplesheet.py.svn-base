@@ -1,0 +1,207 @@
+'''
+Created on 9 Sep 2010
+
+@author: tcezard
+'''
+from wiki_communication import get_wiki_project, wiki_ids, create_wiki_run_element
+from wiki_communication.wiki_pages_utils import get_run_page_from_id, get_run_page_from_title
+import logging
+
+from wiki_communication.wiki_ids import get_run_id_from_page_title
+
+import sys
+from optparse import OptionParser
+import pprint
+from collections import defaultdict
+from utils import utils_logging
+
+
+def read_samplesheet_miseq(samplesheet_file):
+    open_file = open(samplesheet_file)
+    all_lanes=defaultdict(list)
+    for line in open_file:
+        pass
+    return all_lanes
+
+def read_samplesheet_hiseq2000(samplesheet_file):
+    open_file = open(samplesheet_file)
+    all_lanes=defaultdict(list)
+    line_count=0
+    flowcell=None
+    for line in open_file:
+        line_count+=1
+        sp_line=line.strip().split(",")
+        if line_count==1:
+            header=sp_line
+        else:
+            if len(sp_line)>=10:
+                flowcell=sp_line[0]
+                lane=sp_line[1]
+                sampleId=sp_line[2]
+                sampleRef=sp_line[3]
+                indexSequence=sp_line[4]
+                control=sp_line[6]
+                recipe=sp_line[7]
+                operator=sp_line[8]
+                project_ids=wiki_ids.extract_project_ids(sp_line[9])
+                project_id=sample_id=index_id=None
+                if project_ids:
+                    project_id=project_ids[0]
+                sample_ids = wiki_ids.extract_sample_ids(sampleId, project_id_array=[project_id])
+                if sample_ids:
+                    sample_id=unicode(sample_ids[0])
+                index_id=wiki_ids.get_index_id(sp_line[5])
+                all_lanes[lane].append((project_id, sample_id, index_id))
+    open_file.close()
+    return (flowcell, all_lanes)
+
+
+def search_for_pools(project_id, list_samples):
+    project = get_wiki_project(project_id)
+    samples_to_compare1 = set(list_samples)
+    
+    if len(list_samples)>1:
+        pools = project.get_pools()
+        for pool in pools:
+            found=True
+            for library in pool.get_library_list():
+                if not (library.sample.id, library.index_id) in samples_to_compare1:
+                    found=False
+                    break
+            if found:
+                return pool.id
+        print "can't find valid pool"
+            
+    else:
+        samples = project.get_samples()
+        for sample in samples:
+            if (sample.id, "0") in samples_to_compare1:
+                return sample.id
+        #hmm haven't found this sample yet ???
+        #check the libraries
+        library_list = project.get_libraries()
+        if library_list:
+            for library in library_list:
+                if (library.sample.id, library.index_id) in samples_to_compare1:
+                    logging.info("Library %s-%s not in an individual pool"%(library.sample.id, library.index_id))
+                    return library.sample.id
+        
+        #hmm still haven't found it... It must be a RAD pool
+        pools = project.get_pools()
+        for pool in pools:
+            if (pool.id,"0") in samples_to_compare1:
+                return pool.id
+
+    
+def create_run_page_from_samplesheet(run_name, samplesheet_file, production=False):
+    """Create a run page from sample sheet and enter the sample information associated."""
+    flowcell_id, all_lanes = read_samplesheet_hiseq2000(samplesheet_file)
+    run_id = get_run_id_from_page_title(run_name)
+    if run_id is None:
+        logging.critical("Invalid Run name : %s"%(run_name))
+        return 3
+    #Check that this wiki page exist under another title but same id
+    wiki_run_page = get_run_page_from_id(run_id, allow_blank_page=True)
+    if wiki_run_page is None:
+        #Now create the page with the provided page title
+        wiki_run_page = get_run_page_from_title(run_name, type='SOLEXA', allow_blank_page=True)
+    for lane_number in all_lanes.keys():
+        all_samples_in_lane = all_lanes.get(lane_number)
+        all_run_elements_for_that_lane=[]
+        all_project_for_that_lane=[]
+        all_lab_name_for_that_lane=[]
+        all_projects=defaultdict(list)
+        for project, sampleId, indexId in all_samples_in_lane:
+            all_projects[project].append((sampleId,indexId))
+            
+        for project_id in all_projects.keys():
+            all_samples = all_projects.get(project_id)
+            lane_is_phix=is_phix(project_id,all_samples)
+            project = get_wiki_project(project_id)
+            all_project_for_that_lane.append(str(project_id))
+            if lane_is_phix:
+                lab_name=' '.join(["%s"%(sample_id) for sample_id,index_id in all_samples])
+            else:
+                lab_name = search_for_pools(project_id, all_samples)
+                if lab_name is None:
+                    lab_name=' '.join(["%s:%s"%(sample_id,index_id) for sample_id,index_id in all_samples])
+                    logging.critical("sample set: %s can't be found in project %s\nPlease correct the wiki page %s before continue"%(lab_name,project_id,
+                                                                                                                                     project.get_project_page_title()))
+                    return 2
+            all_lab_name_for_that_lane.append(str(lab_name))
+            
+            
+            for sample_id,index_id in all_samples:
+                sample = project.get_sample(sample_id)
+                run_elemt=create_wiki_run_element(run_id, lane_number, project=project, sample=sample,index_number=index_id)
+                if sample: sample.add_info(run_elemt=run_elemt)
+                wiki_run_page.run.add_info(run_elemt=run_elemt)
+                all_run_elements_for_that_lane.append(run_elemt)
+            
+            run_elemt=create_wiki_run_element(run_id, lane_number, index_number="unassigned", usable="no")
+        project_str=' '.join(all_project_for_that_lane)
+        sample_str=' '.join(all_lab_name_for_that_lane)
+        lane=create_wiki_run_element(run_id, lane_number, sample_str=sample_str, project_str=project_str)
+        lane.add_info(run_elemt=all_run_elements_for_that_lane)
+        wiki_run_page.run.add_info(lanes=lane)
+           
+    if production:
+        a,b = wiki_run_page.upload_to_wiki(test_wiki=False)
+    else:
+        a,b = wiki_run_page.upload_to_wiki(test_wiki=True)
+    print a
+    print b
+            
+def is_phix(project_id, samples):
+    if project_id.lower().find('phix')>=0 or project_id.lower().find('controllane')>=0:
+        return True
+    if len(samples)>0:
+        sample_id, index_id = samples[0]
+        if sample_id.lower().find('phix')>=0:
+            return True
+    return False
+    
+def main():
+    #initialise the logging
+    utils_logging.init_logging(logging.DEBUG)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,dummy) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    return_value = create_run_page_from_samplesheet(options.run_name, options.samplesheet_file, options.production)
+    sys.exit(return_value)
+        
+    
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog -r run_name -s samplesheet [--real]"""
+    description = """"""
+    
+    prog_version='0'
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-r","--run_name",dest="run_name",type="string",
+                         help="The run name for the wiki page. Default: %default")
+    optparser.add_option("-s","--samplesheet",dest="samplesheet_file",type="string",
+                         help="The sample sheet file for that run. Default: %default")
+    optparser.add_option("--real",dest="production",action="store_true",default=False,
+                         help="The wiki page will be uploaded on the real wiki instean of the test one. Default: %default")
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    # Test output_file
+    return arg_pass
+
+if __name__=='__main__':
+    main()

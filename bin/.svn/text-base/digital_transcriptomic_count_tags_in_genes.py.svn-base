@@ -1,0 +1,238 @@
+'''
+Created on 28 Jun 2010
+
+@author: tcezard
+'''
+import logging
+import os
+import command_runner
+import glob
+import utils
+from utils.GenomeLoader import GenomeLoader
+from optparse import OptionParser
+from utils import utils_logging,utils_commands, Binning
+import sys
+from gene_annotation import Base_annotator
+from annotate_genomic_location import count_genomic_location_within_gene_per_chr
+
+IN_ANNOTATION=1
+RIGHT_SEQUENCE=2
+ABOVE_THRS=4
+ELSE=8
+FLAGS=[IN_ANNOTATION,RIGHT_SEQUENCE,ABOVE_THRS]
+
+IN_ANNOTATION_STR='in annotation'
+RIGHT_SEQUENCE_STR='valid tag sequence'
+ABOVE_THRS_STR='above threshold'
+ELSE_STR='to be used'
+FLAGS_STR=[IN_ANNOTATION_STR,RIGHT_SEQUENCE_STR,ABOVE_THRS_STR]
+
+def compare_tags(tag1,tag2):
+    sp_tag1 = tag1.split('\t')
+    sp_tag2 = tag2.split('\t')
+    if sp_tag1[0]!=sp_tag2[0]:
+        raise StandardError('Comparing %s and %s from two different reference'%(tag1,tag2))
+    res = int(sp_tag1[1]) - int(sp_tag2[1])
+    if res!=0:
+        return res
+    return cmp(sp_tag2[2],sp_tag1[2])
+
+def check_validity_of_tags(genome_loader, reference, position, strand):
+    fasta_record = genome_loader.get_chr(reference)
+    if fasta_record:
+        header, sequence = fasta_record
+        if sequence[int(position)-1:int(position)+3].upper() =='CATG':
+            return True
+        else:
+            return False
+        
+def get_correlation_tag_data(tag1,tag2,tag3, gene_strand):
+    """From 3 consecutive tags: 
+     - It test if the first is on the same strand as the gene
+     - Test if the second is the reverse of the first create an empty tag if not
+     - Test if the third is on the same strand as the gene create and empty tag otherwise
+     - It returns the coverage of the of the second and third + distance between the two."""
+    reference, tag_position1, tag_strand1, tag_count1 = tag1.split('\t')
+    if utils.DNA_tools.strand_is_same(tag_strand1,gene_strand):
+        reference, tag_position2, tag_strand2, tag_count2 = tag2.split('\t')
+        if utils.DNA_tools.strand_is_same(tag_strand2,gene_strand) or \
+        int(tag_position1) != int(tag_position2):
+            tag3=tag2
+            tag_position2=tag_position1
+            tag_count2=0
+            
+        reference, tag_position3, tag_strand3, tag_count3 = tag3.split('\t')
+        if utils.DNA_tools.strand_is_same(tag_strand3,gene_strand):
+            return int(tag_count2), int(tag_count3), abs(int(tag_position2)-int(tag_position3))
+        else:
+            return int(tag_count2), 0, abs(int(tag_position2)-int(tag_position3))
+        
+    
+    
+def count_tags_in_genes(bam_file, annotation_file, genome_file, output_file, tag_coverage_threshold=0, merge_transcript=False):
+    genome_loader = GenomeLoader(genome_file, keep_in_memory=True, keep_until_done=True)
+    #This command takes the reads and collapse the one mapping exactly at the same location
+    #It also move the mapping location of the (-) negative strand up read length minus 4.
+    #It assume that the reads have been mapped without indel and the CATG have been added.
+    command  = """samtools view -F 4 %s | cut -f 2-4,10 | awk '{if (and($1,16)==16){$3=$3+length($4)-4}; print $1"\t"$2"\t"$3}' | uniq -c | awk '{if (and($2,16)==16){$2="-"} else{$2="+"}; print $3"\t"$4"\t"$2"\t"$1}' """
+    location_stream, process = utils_commands.get_output_stream_from_command(command%(bam_file))
+    base,ext = os.path.splitext(output_file)
+    dist_out_anno_file=base+'_outside_annotation.dist'
+    dist_in_anno_file=base+'_inside_annotation.dist'
+    corelation_tag_2_3_file=base+'_correl_tag2_3.txt'
+    output_correl = utils_logging.open_output_file(corelation_tag_2_3_file,pipe=False)
+    
+    output_stream = utils_logging.open_output_file(output_file,pipe=True)
+    all_tag_count={}
+    all_read_count={}
+    for flag_op in range(IN_ANNOTATION+RIGHT_SEQUENCE+ABOVE_THRS+1):
+        all_tag_count[flag_op]=0
+        all_read_count[flag_op]=0
+    dist_cov_in_annotation = Binning.Distribution_holder()
+    dist_cov_out_annotation = Binning.Distribution_holder()
+    
+    for reference, all_annotation_per_gene in count_genomic_location_within_gene_per_chr(location_stream, annotation_file, merge_transcript):
+        #get all the annotated tags per reference.
+        for gene in all_annotation_per_gene.keys():
+            #split them per genes.
+            if gene=="Not_in_gene":
+                #deal with the ones that are not in gene.
+                all_annotation_per_transcript = all_annotation_per_gene.get(gene)
+                all_tags=all_annotation_per_transcript.get('Not_in_transcript')
+                for tag in all_tags:
+                    tag_flag=0
+                    reference, tag_position, tag_strand, tag_count = tag.split('\t')
+                    dist_cov_out_annotation.add_value(int(tag_count))
+                    if check_validity_of_tags(genome_loader, reference, position=tag_position, strand=tag_strand):
+                        tag_flag+=RIGHT_SEQUENCE
+                    if int(tag_count)>tag_coverage_threshold:
+                        tag_flag+=ABOVE_THRS
+                    all_tag_count[tag_flag]+=1
+                    all_read_count[tag_flag]+=int(tag_count)
+                continue
+            all_annotation_per_transcript = all_annotation_per_gene.get(gene)
+            for transcript in all_annotation_per_transcript.keys():
+                #split them per transcript
+                all_tags = all_annotation_per_transcript.get(transcript)
+                if utils.DNA_tools.strand_is_positive(transcript.strand):
+                    all_tags.sort(cmp=compare_tags,reverse=True)
+                else:
+                    all_tags.sort(cmp=compare_tags, reverse=False)
+                
+                sum_tag=0
+                sum_tag_same_strand=0
+                last_tag_same_strand=0
+                tag_to_use=[]
+                for position, tag in enumerate(all_tags):
+                    tag_flag=IN_ANNOTATION
+                    #look at individual tags
+                    reference, tag_position, tag_strand, tag_count = tag.split('\t')
+                    dist_cov_in_annotation.add_value(int(tag_count))
+                    if check_validity_of_tags(genome_loader, reference, position=tag_position, strand=tag_strand):
+                        tag_flag+=RIGHT_SEQUENCE
+                    if int(tag_count)>tag_coverage_threshold:
+                        tag_flag+=ABOVE_THRS
+                        
+                    if tag_flag & RIGHT_SEQUENCE:
+                        if position+2<len(all_tags):
+                            data = get_correlation_tag_data(all_tags[position], all_tags[position+1],
+                                                            all_tags[position+2], transcript.strand)
+                            if data: 
+                                cov2, cov3, dist_1_2 = data
+                                output_correl.write('%s\t%s\t%s\n'%(cov2, cov3, dist_1_2))
+                        if tag_flag & ABOVE_THRS:
+                            sum_tag+=int(tag_count)
+                            tag_to_use.append(tag)
+                            if utils.DNA_tools.strand_is_same(tag_strand,transcript.strand):
+                                sum_tag_same_strand+=int(tag_count)
+                                if last_tag_same_strand==0:
+                                    last_tag_same_strand+=int(tag_count)
+                    all_tag_count[tag_flag]+=1
+                    all_read_count[tag_flag]+=int(tag_count)
+                output_stream.write('%s\t%s\t%s\t%s\t%s\n'%(transcript, sum_tag,sum_tag_same_strand, last_tag_same_strand,
+                                                        '\t'.join([':'.join(tags.split("\t")) for tags in tag_to_use])))
+    output_stream.close()
+    output_correl.close()
+    genome_loader.close()
+    for flags in all_tag_count.keys():
+        out=[]
+        for pos, bit_flag in enumerate(FLAGS):
+            if flags & bit_flag:
+                out.append('    '+FLAGS_STR[pos])
+            else:
+                out.append('not '+FLAGS_STR[pos])
+        print '%s\t%s\t%s'%(' -- '.join(out),all_tag_count.get(flags), all_read_count.get(flags))
+    base,ext = os.path.splitext(output_file)
+    dist_cov_out_annotation.print_dist(dist_out_anno_file)
+    dist_cov_in_annotation.print_dist(dist_in_anno_file)
+    
+    
+    
+    
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    count_tags_in_genes(options.bam_file, options.annotation_file, options.genome_file,
+                        options.output_file, options.coverage_threshold, options.merge_transcript)
+    
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-b bam_file> <-a annotation_file> <-o output_file>"""
+    description = """This annotate the tags contained in a bam file with the annotation from a second file."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-b","--bam_file",dest="bam_file",type="string",
+                         help="The bam file with the tag aligned to the genome.")
+    optparser.add_option("-o","--output_file",dest="output_file",type="string",
+                         help="The file where the annotated location will be output.")
+    optparser.add_option("-a","--annotation_file",dest="annotation_file",type="string",
+                         help="The annotation files in ucsc, bed, gff or exons format.")
+    optparser.add_option("-g","--genome_file",dest="genome_file",type="string",
+                         help="The file containing the genome in fasta format.")
+    optparser.add_option("-m","--merge_transcript",dest="merge_transcript",action="store_true", default=False,
+                         help="Merge all transcript of one gene into a super transcript. default=%default")
+    optparser.add_option("-c","--coverage_threshold",dest="coverage_threshold",type="int", default=0,
+                         help="remove the tags that have less that that threshold from the annotation. default=%default")
+   
+    
+    
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.bam_file:
+        logging.error("You must specify a bam file -b.")
+        arg_pass=False
+    if not options.annotation_file:
+        logging.error("You must specify a annotation file -a.")
+        arg_pass=False
+    if not options.output_file:
+        logging.error("You must specify an output file with -o.")
+        arg_pass=False
+    if not options.genome_file:
+        logging.error("You must specify a genome file with -g.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

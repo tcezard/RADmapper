@@ -1,0 +1,227 @@
+'''
+Created on 14 Apr 2010
+
+@author: tcezard
+'''
+from IO_interface.test_annotation import read_exon_capture_file,\
+    get_length_of_list_range
+from utils.Binning import Distribution_holder
+from utils import utils_logging, utils_param, DNA_tools
+from overlap.Binnary_search_overlap import Binnary_search
+import os
+import logging
+import sys
+from optparse import OptionParser
+import utils
+import SNPs
+from IO_interface.exon_loader import Exon_annotation_Retriver
+
+
+def print_distribution(dist):
+    list_values=[5,10,20,50]
+    list_results=dist.get_greater_than(list_values)
+    print "%s bases"%(dist.get_nb_element())
+    for i in range(len(list_values)):
+        print "%s bases with more than %sX coverage"%(list_results[i],list_values[i])
+    print "mean coverage=%s standard deviation=%s"%(dist.get_mean(),dist.get_std_dev())
+    percentiles=dist.get_percentiles([25,50,75])
+    print "25 percentile=%s, 50 percentile=%s, 75 percentile=%s, "%(percentiles[0],percentiles[1],percentiles[2])
+
+def get_ranges_and_extend_ranges(all_target_per_chr, extension=100):
+    range_per_chr={}
+    extended_range_per_chr={}
+    for chr in all_target_per_chr.get_chr_names():
+        all_ext_ranges=[]
+        all_ranges=[]
+        all_primary_ranges=all_target_per_chr.get_annotation_from_chr(chr)
+        for range in all_primary_ranges:
+            start=range[0]
+            end=range[1]
+            all_ranges.append((start,end))
+            all_ext_ranges.append((start-extension,end+extension))
+        range_per_chr[chr]=all_ranges
+        extended_range_per_chr[chr]=all_ext_ranges
+    return range_per_chr,extended_range_per_chr
+    
+def test_on_off_target(pileup_file, output_dir, exon_capture_file=None, annotation_file=None):
+    on_target_size=0
+    near_target_size=0
+    if exon_capture_file:
+        all_target_per_chr=read_exon_capture_file(exon_capture_file, extension=0)
+        all_target_ext_per_chr=read_exon_capture_file(exon_capture_file, extension=100)
+    if annotation_file:
+        annotation_retriver=Exon_annotation_Retriver(annotation_file=annotation_file)
+        all_target_per_chr,all_target_ext_per_chr=get_ranges_and_extend_ranges(annotation_retriver, extension=100)
+    
+    for chr in all_target_per_chr.keys():
+        target_list=all_target_per_chr.get(chr)
+        near_target_list=all_target_ext_per_chr.get(chr)
+        on_target_size+=get_length_of_list_range(target_list)
+        near_target_size+=get_length_of_list_range(near_target_list)
+    print on_target_size, near_target_size-on_target_size
+    
+    open_pileup=utils_logging.open_input_file(pileup_file)
+    curr_chr=''
+    distribution_on_target=Distribution_holder()
+    distribution_near_target=Distribution_holder()
+    distribution_off_target=Distribution_holder()
+    nb_line=0
+    all_target_search=None
+    for pileup_line in open_pileup:
+        sp_line=pileup_line.strip().split()
+        chr=sp_line[0]
+        position=int(sp_line[1])
+        coverage=int(sp_line[3])
+        nb_line+=1
+        if nb_line%1000000==0:
+            print nb_line,chr,position,coverage
+        if chr!=curr_chr:
+            print 'start %s'%chr
+            all_target=all_target_per_chr.get(chr)
+            all_target_ext=all_target_ext_per_chr.get(chr)
+            if all_target:
+                all_target_search=Binnary_search(all_target, close_query=True)
+            if all_target_ext:
+                all_target_ext_search=Binnary_search(all_target_ext, close_query=True)
+            curr_chr=chr
+        if all_target_search:
+            results=all_target_search.ovarlap_search(position)
+        else:
+            results=[]
+        if len(results)>0:
+            distribution_on_target.add_value(coverage)
+        else:
+            if all_target_search:
+                results=all_target_ext_search.ovarlap_search(position)
+            else:
+                results=[]
+            if len(results)>0:
+                distribution_near_target.add_value(coverage)
+            else:
+                distribution_off_target.add_value(coverage)
+    print "On target"
+    print_distribution(distribution_on_target)
+    print "Near target"
+    print_distribution(distribution_near_target)
+    print "Off target"
+    print_distribution(distribution_off_target)
+    distribution_on_target.plot(output_file=os.path.join(output_dir,'coverage_on_target.png'),
+                                xlabel='coverage', ylabel='bases', title='coverage distribution of on target bases')
+    distribution_on_target.print_dist(output_file=os.path.join(output_dir,'coverage_on_target.txt'))
+    distribution_near_target.plot(output_file=os.path.join(output_dir,'coverage_near_target.png'),
+                                  xlabel='coverage', ylabel='bases', title='coverage distribution of near target bases')
+    distribution_near_target.print_dist(output_file=os.path.join(output_dir,'coverage_near_target.txt'))
+    distribution_off_target.plot(output_file=os.path.join(output_dir,'coverage_off_target.png'),
+                                 xlabel='coverage', ylabel='bases', title='coverage distribution of off target bases')
+    distribution_off_target.print_dist(output_file=os.path.join(output_dir,'coverage_off_target.txt'))
+    
+def main():
+    #initialize the logging
+    utils_logging.init_logging()
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    print options.annotation_file
+    test_on_off_target(options.pileup_file, options.output_dir,
+                       exon_capture_file=options.exon_capture_file,
+                       annotation_file=options.annotation_file)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script is a template to of a python script that include help and option's checking.
+    The requirement and assumption of the script can be described here.
+    A link to another documentation can also be added here."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-i","--pileup_file",dest="pileup_file",type="string",
+                         help="Path to a file where the input data are located. Default: %default")
+    optparser.add_option("-o","--output",dest="output_dir",type="string",
+                         help="Path to a file where the results will be output. Default: %default")
+    optparser.add_option("-e","--exon_capture_file",dest="exon_capture_file",type="string",
+                         help="The file containing the probe position. Default: %default")
+    optparser.add_option("-a","--annotation_file",dest="annotation_file",type="string",
+                         help="replace the probe by the annotation. Default: %default")
+   
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    # Test output_file
+    arg_pass and utils_param.check_input_file(options.pileup_file, pipe_allowed=True)
+    if not options.output_dir:
+        logging.error("You must specify an output directory.")
+        arg_pass=False
+    if not options.exon_capture_file and not options.annotation_file:
+        logging.error("You must specify an exon capture bed file or an annotation file.")
+        arg_pass=False
+    
+    return arg_pass
+
+
+    
+if __name__=="__main__":
+    main()
+        
+if __name__=="1__main__":
+    open_stream=sys.stdin
+    equal_forward=0
+    equal_reverse=0
+    different=0
+    WEIRD=0
+    line_count=0
+    for line in open_stream:
+        line_count+=1
+        sp_line=line.strip().split()
+        
+        #chr21:16339172  G       G       A:0:0   C:0:0   G:281:17        T:0:1   G       CC      forward rs2229742
+        ref_base1=sp_line[1].upper()
+        ref_base2=sp_line[7].upper()
+        if ref_base1!=ref_base2:
+            print "ERROR at line %s reference bases don't match"%line_count
+        
+        genotype_seq=set(SNPs.get_nt_array_from_IUPAC(sp_line[2]))
+        genotype_assay=set()
+        for char in sp_line[8]:
+            genotype_assay.add(char)
+        if genotype_seq == genotype_assay:
+            if sp_line[9]!='forward':
+                print line.strip(), 'equal forward\tWEIRD'
+                WEIRD+=1
+            else:
+                print line.strip(), 'equal forward'
+                pass
+            equal_forward+=1
+        else:
+            genotype_assay=set()
+            for char in DNA_tools.rev_complements(sp_line[8]):
+                genotype_assay.add(char)
+            if genotype_seq == genotype_assay:
+                if sp_line[9]!='reverse':
+                    print line.strip(), 'equal forward\tWEIRD'
+                    WEIRD+=1
+                else:
+                    print line.strip(), 'equal reverse'
+                    pass
+                equal_reverse+=1
+            else:
+                print line.strip(), 'different'
+                different+=1
+    print '%s are equal forward %s are equal reverse %s are different %s are WEIRD'%(equal_forward,equal_reverse,different, WEIRD)        
+    

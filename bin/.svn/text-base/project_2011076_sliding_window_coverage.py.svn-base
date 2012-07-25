@@ -1,0 +1,104 @@
+#/usr/bin/env python
+# -*- coding: utf-8 -*-
+'''
+Created on 7 may 2012
+@author: tcezard
+'''
+import sys
+from optparse import OptionParser
+
+
+coverage_values=[0,0,0,0,0,0,0,0,0,0,0,0]
+number_of_reads=[2764191129,2604839550,3320960169,2702248773,2726629035,2680850525,1941869590,2623389232,2405986602,2393477791,2192083354,2074790752]
+assumed_sample_order=['DL1777_2','DL2151_2','DL2859_2','DL2874_2','DL1777_3','DL2151_3','DL2859_3','DL2874_3','DL1777_4','DL2151_4','DL2859_4','DL2874_4']
+def sliding_windows(input_file, output_file, window_size, window_step, normalization=False):
+    open_input_stream = open(input_file)
+    open_output_stream = open(output_file, 'w')
+    open_output_stream.write('position\t%s'%('\t'.join(assumed_sample_order)))
+    normalization_fact=[]
+    if normalization:
+        for nb_read in number_of_reads:
+            normalization_fact.append(nb_read/1000000)
+    else:
+        for nb_read in number_of_reads:
+            normalization_fact.append(1)
+    #initiate list of windows
+    list_of_windows=[[],[],[],[],[],[],[],[],[],[],[],[]]
+    step=0
+    size=0
+    for line in open_input_stream:
+        sp_line = line.strip().split()
+        for i,value in enumerate(sp_line[1:]):
+            list_of_windows[i].append(int(value))
+        step+=1
+        size+=1
+        if size >= window_size:
+            for window in list_of_windows:
+                window.pop(0)
+            size-=1
+            if step>=window_step:
+                out=[]
+                out.append(str(int(sp_line[0])- window_size/2))
+                for i,window in enumerate(list_of_windows):
+                    out.append('%.2f'%(float(sum(window))/window_size/normalization_fact[i]))
+                open_output_stream.write( '\t'.join(out)+'\n')
+                step=0
+    open_input_stream.close()
+    open_output_stream.close()
+    
+def main():
+    #initialize the logging
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    
+    if not arg_pass:
+        sys.stderr.write(optparser.get_usage()+'\n')
+        sys.stderr.write("Non valid arguments: exit\n")
+        sys.exit(1)
+    sliding_windows(options.input_file, options.output_file, int(options.window_size), int(options.window_step), options.normalization)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input_file> -o <output_file> [-w window_size -s window_step -n]"""
+    description = """This script will take a coverage file with position in column 1 and coverage in next columns and output a new file with data bin with a sliding window.
+    """
+    
+    optparser = OptionParser(description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-i","--input_file",dest="input_file",type="string",
+                         help="The input_file file containing coverage information. It assumes that the file contains 13 columns: 1 position cloumn and 12 samples in this order: %s"%(', '.join(assumed_sample_order)))
+    optparser.add_option("-o","--output_file",dest="output_file",type="string",
+                         help="The output file in which the results will be output.")
+    optparser.add_option("-w","--window_size",dest="window_size",type="int",default=1000,
+                         help="The sized of the window that will be use to bin the data.")
+    optparser.add_option("-s","--window_step",dest="window_step",type="int",default=1000,
+                         help="The sized of the step between each window.")
+    optparser.add_option("-n","--normalization",dest="normalization",action='store_true', default=False,
+                         help="set the script to normalize the coverage with normalization factor preset in the code.")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.input_file:
+        sys.stderr.write("You must specify an input file with -i.\n")
+        arg_pass=False
+    if not options.output_file:
+        sys.stderr.write("You must specify an output file with -o.\n")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

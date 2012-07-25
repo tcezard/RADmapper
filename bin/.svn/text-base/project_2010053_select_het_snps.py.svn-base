@@ -1,0 +1,132 @@
+'''
+Created on Mar 9, 2011
+
+@author: tcezard
+'''
+from utils import utils_logging
+
+from IO_interface import vcfIO
+import sys, os
+import pprint
+
+
+def get_het_snps_from_genotype(vcf_file,output_file_16,output_file_3,output_file_4):
+    file_handle = utils_logging.open_input_file(vcf_file, pipe=False)
+    output_fh_16 = utils_logging.open_output_file(output_file_16, pipe=False)
+    output_fh_3 = utils_logging.open_output_file(output_file_3, pipe=False)
+    output_fh_4 = utils_logging.open_output_file(output_file_4, pipe=False)
+    
+    reader  = vcfIO.VcfReader(file_handle)
+    all_samples = reader.get_sample_names()
+    sample_16=[]
+    sample_3=[]
+    sample_4=[]
+    sample_161=['16-1-R1','16-1-R2','16-1-R3']
+    sample_168=['16-8-R1','16-8-R2','16-8-R3']
+    sample_16C=['16-C-R1','16-C-R2','16-C-R3']
+    sample_31=['3-1-R1','3-1-R2','3-1-R3']
+    sample_38=['3-8-R1','3-8-R2','3-8-R3']
+    sample_3C=['3-C-R1','3-C-R2','3-C-R3']
+    sample_41=['4-1-R1','4-1-R2','4-1-R3']
+    sample_48=['4-8-R1','4-8-R2','4-8-R3']
+    sample_4C=['4-C-R1','4-C-R2','4-C-R3']
+    for sample in all_samples:
+        if sample.startswith('16'):
+            sample_16.append(sample)
+        if sample.startswith('4'):
+            sample_4.append(sample)
+        if sample.startswith('3'):
+            sample_3.append(sample)
+    number_discordant_16=0
+    number_discordant_3=0
+    number_discordant_4=0
+    number_het_16=0
+    number_het_4=0
+    number_het_3=0
+    total_line=0
+    print all_samples
+    for record in reader:
+        total_line+=1        
+        #test if all the samples of the same type say the same things
+        no_16=False
+        no_4=False
+        no_3=False
+        #record = vcfIO.VcfRecord(line, reader.get_sample_names())
+        
+        all_genotypes_16 = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_16)
+        all_genotypes_4 = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_4)
+        all_genotypes_3 = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_3)
+        if len(all_genotypes_16)>1:
+            if len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_161))>1 or\
+               len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_168))>1 or\
+               len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_16C))>1 :
+                number_discordant_16+=1
+                no_16 =True
+        if len(all_genotypes_4)>1:
+            if len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_41))>1 or\
+               len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_48))>1 or\
+               len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_4C))>1 :
+                number_discordant_4+=1
+                no_4 =True
+        if len(all_genotypes_3)>1:
+            if len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_31))>1 or\
+               len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_38))>1 or\
+               len(record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=sample_3C))>1 :
+                number_discordant_3+=1
+                no_3 =True
+        
+        
+        bases=[record.get_reference_base()]
+        bases.extend(record.get_alt_bases())
+        if not no_16:
+            genotypes=set()
+            for genotype in all_genotypes_16.keys():
+                genotypes.update(set(genotype.split('/')))
+            if len(genotypes)==2:
+                tmp = list(genotypes)
+                tmp.sort()
+                sample_list, all_samples_support = record.get_bases_support_for_ref_and_alt_allele(sample_list = sample_16)
+                out = '\t'.join(['%s\t%s'%(ref_support, alt_support) for (ref_support, alt_support) in all_samples_support])
+                output_fh_16.write('%s\t%s\t%s\t%s\t%s\n'%(record.get_reference(),record.get_position(), bases[int(tmp[0])], bases[int(tmp[1])], out))
+                number_het_16+=1
+        if not no_4:
+            genotypes=set()
+            for genotype in all_genotypes_4.keys():
+                genotypes.update(set(genotype.split('/')))
+            if len(genotypes)==2:
+                tmp = list(genotypes)
+                tmp.sort()
+                sample_list, all_samples_support = record.get_bases_support_for_ref_and_alt_allele(sample_list = sample_4)
+                out = '\t'.join(['%s\t%s'%(ref_support, alt_support) for (ref_support, alt_support) in all_samples_support])
+                output_fh_4.write('%s\t%s\t%s\t%s\t%s\n'%(record.get_reference(),record.get_position(), bases[int(tmp[0])], bases[int(tmp[1])], out))
+                number_het_4+=1
+        if not no_3:
+            genotypes=set()
+            for genotype in all_genotypes_3.keys():
+                genotypes.update(set(genotype.split('/')))
+            if len(genotypes)==2:
+                tmp = list(genotypes)
+                tmp.sort()
+                sample_list, all_samples_support = record.get_bases_support_for_ref_and_alt_allele(sample_list = sample_3)
+                out = '\t'.join(['%s\t%s'%(ref_support, alt_support) for (ref_support, alt_support) in all_samples_support])
+                output_fh_3.write('%s\t%s\t%s\t%s\t%s\n'%(record.get_reference(),record.get_position(), bases[int(tmp[0])], bases[int(tmp[1])], out))
+                number_het_3+=1
+    output_fh_16.close()
+    output_fh_4.close()
+    output_fh_3.close()
+    
+    print 'total number snps looked at=%s'%total_line
+    print 'number het snps for 16=%s (%.2f%%)'%(number_het_16,number_het_16/float(total_line)*100)
+    print 'number discordant base for 16=%s (%.2f%%)'%(number_discordant_16, number_discordant_16/float(total_line)*100)
+    print 'number het snps for 4=%s (%.2f%%)'%(number_het_4,number_het_4/float(total_line)*100)
+    print 'number discordant base for 4=%s (%.2f%%)'%(number_discordant_4, number_discordant_4/float(total_line)*100)
+    print 'number het snps for 3=%s (%.2f%%)'%(number_het_3,number_het_3/float(total_line)*100)
+    print 'number discordant base for 3=%s (%.2f%%)'%(number_discordant_3, number_discordant_3/float(total_line)*100)
+
+
+if __name__=="__main__":
+    vcf_file = sys.argv[1]
+    output_file_16 = sys.argv[2]
+    output_file_3 = sys.argv[3]
+    output_file_4 = sys.argv[4]
+    get_het_snps_from_genotype(vcf_file,output_file_16,output_file_3,output_file_4)

@@ -1,0 +1,126 @@
+'''
+Created on Mar 9, 2011
+
+@author: tcezard
+'''
+from utils import utils_logging
+import sys
+
+def identify_RAD_markers(input_file):
+    open_file = utils_logging.open_input_file(input_file)
+    line = open_file.readline()
+    sample_names = line.strip().split('\t')[4:]
+    all_clusters={}
+    for line in open_file:
+        sp_line = line.strip().split('\t')
+        if int(sp_line[1])!=2:
+            pass
+        else:
+            cluster_id = sp_line[0]
+            if not all_clusters.has_key(cluster_id):
+                all_clusters[cluster_id]=[]
+            all_clusters[cluster_id].append(sp_line[1:])
+    
+    open_file.close()
+    for cluster_id in all_clusters.keys():
+        alleles=all_clusters.get(cluster_id)
+        singleton=0
+        total=[]
+        for i in range(len(sample_names)):
+            total.append(0)
+        #count the number of time where the coverage is sufficient
+        good_coverage_sum=0
+        all_seg_pattern=[]
+        for j in range(len(alleles)):
+            allele_string_array = alleles[j]
+            ClusterAlleles=int(allele_string_array[0])
+            all_seg_pattern.append(allele_string_array[1])
+            Allele=allele_string_array[2]
+            alleles_sample_counts = allele_string_array[3:]
+            sum=0
+            NA_samples=[]
+            
+            for i in range(len(alleles_sample_counts)):
+                if alleles_sample_counts[i]=='NA':
+                    alleles_sample_counts[i]=0
+                    NA_samples.append(i)
+                else:
+                    alleles_sample_counts[i] = int(alleles_sample_counts[i])
+                sum += alleles_sample_counts[i]
+                total[i]+=alleles_sample_counts[i]
+            #allele_string_array=[ClusterAlleles,SegPattern,Allele]
+            #allele_string_array.extend(alleles_sample_counts)
+            #alleles[j] = allele_string_array
+            if sum>10:
+                good_coverage_sum+=1
+        #count the number of segregation pattern with singleton
+        good_seg_pat_sum=0
+        #count the number of time a segregation pattern is different from the previous one
+        good_difference=0
+        for pos in range(len(sample_names)):
+            sum=0
+            previous='x'
+            previous_boolean=False
+            for i in range(len(all_seg_pattern)):
+                if all_seg_pattern[i][pos]!=previous:
+                    previous_boolean=True
+                else:
+                    previous_boolean=False
+                if all_seg_pattern[i][pos]=='-':
+                    pass
+                else:
+                    sum+=1
+            if sum==1:
+                good_seg_pat_sum+=1
+            if previous_boolean:
+                good_difference+=1
+
+        #for j in range(len(alleles)):
+        #    allele_string_array
+        #    alleles_sample_counts = alleles[j][3:]
+        #    for i in range(len(alleles[j][3:])):
+        #        if total[i]>0:
+        #            alleles[j][3+i]=alleles[j][3+i]/float(total[i])
+
+        
+        if good_seg_pat_sum==len(sample_names) and good_difference==len(sample_names) and good_coverage_sum==ClusterAlleles:
+            snps=find_snps(alleles)
+            output_marker_with_snps(cluster_id, alleles, snps)
+            
+def find_snps(alleles):
+    allele_string_array = alleles[0]
+    reference=allele_string_array[2]
+    snps={}
+    for allele_string_array in alleles[1:]:
+        allele=allele_string_array[2]
+        for i in range(len(reference)):
+            if reference[i]!=allele[i]:
+                if not snps.has_key(i+1):
+                    snps[i+1]=[reference[i]]
+                snps[i+1].append(allele[i])
+    return snps
+            
+                
+
+def output_marker_with_snps(cluster_id,alleles, snps):
+    sys.stdout.write("%s\t"%(cluster_id))
+    for allele_string_array in alleles:
+        sys.stdout.write("\t".join([str(value) for value in allele_string_array]))
+        sys.stdout.write('\t')
+    all_snps_pos = snps.keys()
+    all_snps_pos.sort()
+    for snps_pos in all_snps_pos:
+        bases_change=snps.get(snps_pos)
+        sys.stdout.write('%s:%s'%(snps_pos, '/'.join(bases_change)))
+        sys.stdout.write('\t')
+    print 
+    
+def output_marker_with_snps_modif(cluster_id,alleles, snps):
+    all_snps_pos = snps.keys()
+    all_snps_pos.sort()
+    for snps_pos in all_snps_pos:
+        print snps_pos
+
+if __name__=="__main__":
+    input_file = sys.argv[1]
+    identify_RAD_markers(input_file)

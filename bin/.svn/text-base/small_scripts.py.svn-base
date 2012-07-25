@@ -1,0 +1,1166 @@
+#-*- coding: utf-8 -*-
+'''
+Created on 29 Jan 2010
+
+@author: tcezard
+'''
+import sys
+import os
+import logging
+from utils.Binning import Distribution_holder, load_distribution
+import re
+from IO_interface.samIterator import Sam_record
+import random
+from overlap import merge_ranges
+import time
+import threading
+from wiki_communication.wiki_pages_utils import get_all_run_page_titles,\
+    get_run_page_from_title, get_all_project_page_title,\
+    get_project_page_from_title
+from wiki_communication import get_wiki_project
+from wiki_communication.wiki_exceptions import Wiki_Exception, Wiki_Parser_Error
+from utils import utils_logging, split_thousands, utils_commands, DNA_tools
+from wiki_communication.wiki_page_labels import parse_project_labels
+from run_quality_check import get_qc_from_seq_archive
+from get_data_from_seqarchive import find_seq_archive_file
+from utils.utils_commands import get_output_stream_from_command
+from utils.utils_logging import open_input_file
+import command_runner
+
+    
+
+if __name__=="1__main__":
+    """Merge three lists of snps using the two first columns as key."""
+
+    def read_file(input_file, dict, name):
+        open_file=open(input_file)
+        for line in open_file:
+            sp_line=line.strip().split()
+            key='%s:%s'%(sp_line[0],sp_line[1])
+            if dict.has_key(key):
+                dict[key][name]=sp_line[2:]
+            else:
+                dict[key]={name:sp_line[2:]}
+        return dict
+    
+    input_file1="/home/tcezard/projects/2009108_Tom_Ashton/level3/LA_snps_m30_q20.txt"
+    input_file2="/home/tcezard/projects/2009108_Tom_Ashton/level3/MY_snps_m30_q20.txt" 
+    input_file3="/home/tcezard/projects/2009108_Tom_Ashton/level3/NO_snps_m30_q20.txt" 
+    dict={}
+    all_names=["LA","MY","NO"]
+    read_file(input_file1, dict, "LA")
+    read_file(input_file2, dict, "MY")
+    read_file(input_file3, dict, "NO")
+    
+    for key in dict.keys():
+        out=[]
+        out.append('\t'.join(key.split(':')))
+        names=dict[key].keys()
+        names.sort()
+        dict_snp_base={}
+        for name in all_names:
+            out.append(name)
+            if dict.get(key).has_key(name):
+                array=dict.get(key).get(name)
+            else:
+                array=['"-"','"-"','"-"','"-"','"-"','"-"','"-"','"-"']
+            if  dict_snp_base.has_key(array[2]):
+                dict_snp_base[array[2]]+=1
+            else:
+                dict_snp_base[array[2]]=1
+            out.append('\t'.join(array))
+        out.append(str(len(names)))
+        dict_snp_base.pop('"-"',None)
+        bases=dict_snp_base.keys()
+        bases.sort()
+        tmp=[]
+        for base in bases:
+            tmp.append('%s-%s'%(dict_snp_base.get(base),base))
+        out.append('/'.join(tmp))
+        print '%s'%('\t'.join(out))
+            
+
+              
+if __name__=="1__main__":
+    """print consensus from sam pileup"""
+    from utils.FastaFormat import FastaWriter
+    from utils.FastaFormat import FastaReader
+    from SNPs import get_nt_array_from_IUPAC 
+    utils_logging.init_logging()
+    input_genome="/home/tcezard/genomes/escherichia_coli/O157H7_EDL933/E_Coli_O157H7_EDL933_test.fasta"
+    if len(sys.argv)>1 and sys.argv[1] is not None:
+        output_genome=sys.argv[1]
+    else:
+        logging.error("you must specify an output file")
+        sys.exit(1)
+    
+    name,ext=os.path.splitext(os.path.basename(output_genome))
+    open_input=sys.stdin
+    reader=FastaReader(open(input_genome))
+    writer=FastaWriter(open(output_genome,"w"),60)
+    writer.start_sequence(name)
+    (header,sequence)=reader.next()
+    last_position=0
+    for line in open_input:
+        sp_line=line.strip().split()
+        position=int(sp_line[1])
+        if position > last_position and last_position+1 != position:
+            #print position, sequence[last_position:position-1]
+            writer.write_sequence(sequence[last_position:position-1])
+        last_position=position
+        ref=sp_line[2]
+        if ref=="*":
+            continue
+        cons=sp_line[3]
+        snps=get_nt_array_from_IUPAC(cons)
+        if ref.upper() in snps:
+            snps.remove(ref.upper())
+        if len(snps)>0:
+            #print position, snps[0]
+            #print line.strip()
+            writer.write_sequence(snps[0])
+        else:
+            #print position, ref.upper()
+            #print line.strip()
+            writer.write_sequence(ref.upper())
+        if position % 10000==0:
+            print name, position
+
+if __name__=="1__main__":
+    '''search and replace for ecoli project'''
+    command='''samtools pileup -f ~/genomes/escherichia_coli/O157H7_EDL933/E_Coli_O157H7_EDL933_test.fasta /home/tcezard/projects/solid_trial_ecoli/20100126_8_Ecoli/6991/Corona_lite/20100126_8_Ecoli_6991_F3.csfasta.ma.50.6.annotated.gff3.bam | python ~/workspace/pipeline_tools_python/sbin/error_rate_from_bam.py -i PIPE -o  /home/tcezard/projects/solid_trial_ecoli/20100126_8_Ecoli/6991/Corona_lite/20100126_8_Ecoli_6991_F3.csfasta.ma.50.6.annotated_base_dist'''
+    command="""java -jar ~/tools/linux_x86_64/Picard/picard-tools-1.16/SortSam.jar  I=~/projects/2009113_Eran_Tauber/191/bwa/191.bam O=~/projects/2009113_Eran_Tauber/191/191_sorted.bam SO=coordinate;
+java -jar ~/tools/linux_x86_64/Picard/picard-tools-1.16/MarkDuplicates.jar I=~/projects/2009113_Eran_Tauber/191/bwa/191_sorted.bam M=~/projects/2009113_Eran_Tauber/191/bwa/191_duplicate_metric.txt O=~/projects/2009113_Eran_Tauber/191/bwa/191_rmdup.bam;
+samtools pileup -f ~/genomes/drosophila_melanogaster/dm3/dm3.fa ~/projects/2009113_Eran_Tauber/191/bwa/191_rmdup.bam -s | python ~/workspace/pipeline_tools_python/sbin/snps_and_allele_frequency_from_bam.py -i PIPE -o ~/projects/2009113_Eran_Tauber/191/bwa/191_rmdup_snps_m30_q20.txt;
+samtools pileup -f ~/genomes/drosophila_melanogaster/dm3/dm3.fa -i -c ~/projects/2009113_Eran_Tauber/191/bwa/191_rmdup.bam | perl ~/tools/linux_x86_64/samtools/samtools-0.1.7a/misc/samtools.pl varFilter| awk '{if ($2=="*") print}'  > ~/projects/2009113_Eran_Tauber/191/bwa/191_rmdup_indels_samtools.txt;
+"""
+    command="""less XXX.reads | awk '{print substr($1,1,length($1))"\n"$2"\n+"substr($1,2,length($1)-1)"\n"$3>"XXX_1.fastq"; print substr($1,1,length($1)-2)"/2\n"$4"\n+"substr($1,2,length($1)-3)"/2\n"$5>"XXX_2.fastq";}' """
+    str_to_replace='XXX'
+    new_strings =['mids_30-10','mids_30-11','mids_30-12','mids_30-13',
+                  'mids_30-14','mids_30-15','mids_30-16','mids_30-17',
+                  'mids_30-18','mids_30-1','mids_30-2','mids_30-3',
+                  'mids_30-4','mids_30-5','mids_30-6','mids_30-7',
+                  'mids_30-8','mids_30-9','mids_34-10','mids_34-11',
+                  'mids_34-12','mids_34-13','mids_34-14','mids_34-15',
+                  'mids_34-16','mids_34-17','mids_34-18','mids_34-1',
+                  'mids_34-2','mids_34-3','mids_34-4','mids_34-5',
+                  'mids_34-6','mids_34-7','mids_34-8','mids_34-9']
+
+    command=' '.join(command.split('\n'))
+    print command
+    for new_string in new_strings:
+        print command.replace(str_to_replace, str(new_string))
+        
+        
+
+
+    
+if __name__=="1__main__":
+    cigar='394M2D53M1I19M1D528M1D479M20D1091M1D3196M9D653M1D5M1I1027M1I195M'
+    sp_cigar = re.findall("[0-9]+[MISH]",cigar)
+    read_length = 0
+    for cigar_element in sp_cigar:
+        read_length += int(cigar_element[:-1])
+    print read_length
+    
+    sp_cigar = re.findall("[0-9]+[MDNP]",cigar)
+    reference_length = 0
+    for cigar_element in sp_cigar:
+        reference_length += int(cigar_element[:-1])
+    print reference_length
+    
+    sp_cigar = re.findall("[0-9]+[MIS]",cigar)
+    sequence_length = 0 
+    for cigar_element in sp_cigar:
+        sequence_length += int(cigar_element[:-1])
+    print sequence_length
+
+if __name__=="1__main__":
+    file1='/home/tcezard/projects/2010019_David_Savage/Illumina_snps_array.csv'
+    file2='/home/tcezard/projects/2010019_David_Savage/snp130.txt.gz'
+    open_file1=utils_logging.open_input_file(file1)
+    key_2_data={}
+    for line in open_file1:
+        sp_line=line.split()
+        key_2_data[sp_line[1]]=sp_line
+    open_file1.close()
+    key_found={}
+    open_file2=utils_logging.open_input_file(file2)
+    for line in open_file2:
+        sp_line=line.split()
+        if key_2_data.get(sp_line[4]) is not None:
+            key_found[sp_line[4]]=1
+            original_sp_line=key_2_data.get(sp_line[4])
+            print '\t'.join(original_sp_line)+'\t'+'\t'.join(sp_line)
+    for key in key_2_data:
+        if not key_found.get(key):
+            print '\t'.join(key_2_data.get(key))
+    open_file2.close()
+    
+    
+if __name__=="1__main__":
+    import signal
+    def on_exit(sig, func=None):
+        print "exit handler triggered with signal=%s"%sig
+        time.sleep(5)
+    signal.signal(signal.SIGTERM, on_exit)
+    print "Press  to quit"
+    raw_input()
+    print "quit!"
+
+
+if __name__=="1__main__":
+    output_file='/home/tcezard/projects/20100211_1_chicken/BFAST/frag_length_distriution.txt'
+    all_record_per_chr={}
+    frag_len_distribution=Distribution_holder()
+    curr_chr=''
+    count_line=0
+    singles_that_says_otherwise=0
+    nb_unmapped_row=0
+    for line in sys.stdin:
+        record=Sam_record(line)
+        count_line+=1
+        if count_line % 100000==0:
+            print count_line, len(all_record_per_chr), record.get_position(), frag_len_distribution.get_nb_element()
+            if len(all_record_per_chr)>1000000:
+                print 'cleanup'
+                record_removed=0
+                for record_name in all_record_per_chr.keys():
+                    old_record=all_record_per_chr.get(record_name)
+                    if record.get_position()-old_record.get_position()>200000:
+                        all_record_per_chr.pop(record_name)
+                        record_removed+=1
+                        
+                print '%s record removed'%record_removed
+        if not record.is_unmapped() or not record.is_mate_unmapped() and record.get_mate_reference_name()=='=' and (record.is_reverse_strand() == record.is_mate_reverse_strand()):
+            nb_unmapped_row=0
+            if record.get_reference_name()!=curr_chr:
+                curr_chr=record.get_reference_name()
+                all_record_per_chr={}
+                print 'start %s'%curr_chr
+            mate_record=all_record_per_chr.pop(record.get_query_name(),None)
+            if mate_record:
+                if record.is_reverse_strand():
+                    position=record.get_position()-record.get_read_length()
+                    
+                    mate_position=mate_record.get_position()
+                    frag_len=abs(mate_position-position)
+                    frag_len_distribution.add_value(frag_len)
+            else:
+                all_record_per_chr[record.get_query_name()]=record
+        elif record.is_unmapped():
+            nb_unmapped_row+=1
+            if nb_unmapped_row>100000:
+                break
+    frag_len_distribution.print_dist(output_file)
+ 
+if __name__=="1__main__":
+    float_number=random.random()
+    tries=1000
+    dict_test={}
+    all_number=[]
+    for i in range(1,tries):
+        float_number=float(1)/i
+        print 'add %s to dict with hash=%s'%(float_number,hash(float_number))
+        dict_test[float_number]=1
+    for i in range(1,tries):
+        float_number=float(1)/i
+        print 'remove %s to dict with hash=%s'%(float_number,hash(float_number))
+        dict_test.pop(float_number)
+        
+    
+if __name__=="1__main__":
+    class thread_test(threading.Thread):
+        def __init__(self, nb):
+            threading.Thread.__init__ ( self )
+            self.nb=nb
+            
+        def run(self):
+            logging.info('Thread %s starts'%self.nb)
+            time.sleep(10)
+            logging.info('Thread %s is done'%self.nb)
+            
+    utils_logging.init_logging()
+    for i in range(1,5):
+        servth = thread_test(i)
+        servth.start()
+        time.sleep(1)
+    
+
+
+if __name__=="1__main__":
+    all_run_page_titles =get_all_run_page_titles('SOLEXA')
+    for parent_page_title, run_page_title in all_run_page_titles:
+        if run_page_title.startswith('10'):
+            try:
+                run_page = get_run_page_from_title(run_page_title)
+                number_cycle = run_page.run.number_cycle
+                read_status = run_page.run.read_status
+                nb_read_per_run=0
+                lane_with_read=0
+                for run_element in run_page.run.get_lanes():
+                    nb_read,nb_gq_read1,qc_tile1, nb_gq_read2, qc_tile2 = get_qc_from_seq_archive(run_element, run_page.run.is_single_end())
+                    project_id = run_element.get_project_str()
+                    try:
+                        project = get_wiki_project(project_id)
+                    except Wiki_Exception, e:
+                        logging.error(str(e))
+                        project = None
+                    if project:
+                        application = project.application
+                    else:
+                        application = ''
+                        
+                    if nb_read is None:
+                        nb_read=''
+                    else:
+                        nb_read_per_run+=nb_read
+                        lane_with_read+=1
+                    if nb_gq_read1 is None:
+                        nb_gq_read1=''
+                    if nb_gq_read2 is None:
+                        nb_gq_read2=''
+                    
+                    
+                    
+                    print '%s,%s,%s,%s,%s,%s,%s,%s,%s'%(run_element.get_run().id,run_element.get_lane_number(), nb_read,nb_gq_read1,
+                                                     nb_gq_read2, number_cycle, project_id, read_status, application)
+                if lane_with_read<8 and lane_with_read>0:
+                    nb_read_per_run = int(nb_read_per_run/lane_with_read*8.0)
+                #print run_element.get_run().id, nb_read_per_run
+            except StandardError, e :
+                logging.exception('ERROR')
+                for i in range(8): print '%s,%s,,,,,,'%(run_page_title,i+1)
+
+
+if __name__=="1__main__":
+    all_project_page_title = get_all_project_page_title()
+    all_labels={}
+    for project_page_title in all_project_page_title:
+        print project_page_title
+        project_page = get_project_page_from_title(project_page_title)
+        labels = project_page._get_labels()
+        parsed_labels = parse_project_labels(labels)
+        for label_type in parsed_labels.keys():
+            if not all_labels.has_key(label_type):
+                all_labels[label_type]=set()
+            if type(parsed_labels.get(label_type)) == list:
+                if None in parsed_labels.get(label_type):
+                    parsed_labels.get(label_type).remove(None)
+                all_labels[label_type].update(parsed_labels.get(label_type))
+            else:
+                if parsed_labels.get(label_type) is not None:
+                    all_labels[label_type].add(parsed_labels.get(label_type))
+            
+    
+    for label_type in all_labels.keys():
+        print '%s\t%s'%(label_type, '\t'.join(all_labels.get(label_type)))
+    
+    
+if __name__=="1__main__":
+    all_project_page_titles = get_all_project_page_title()
+    #all_project_page_titles = ['2009032_Mouse_BAC_Nigel Saunders']
+    #all_project_page_titles=all_project_page_titles[all_project_page_titles.index(u'2009145_David Barass_sequencing only'):]
+    #all_project_page_titles=all_project_page_titles[all_project_page_titles.index(u'2009146_Mikael Björklund_sequencing only'):]
+    for project_page_title in all_project_page_titles:
+        try:
+            project_page = get_project_page_from_title(project_page_title)
+            contacts = project_page.project.get_contacts()
+            print project_page_title+'\t'+'\t'.join([str(contact) for contact in contacts])
+        except Wiki_Exception, e:
+            print project_page_title
+            logging.exception("CRASH")
+        except UnicodeEncodeError:
+            pass
+        except Exception, e:
+            print project_page_title
+            logging.exception("CRASH")
+            
+if __name__=="1__main__":
+    project_id='2010020'
+    project=get_wiki_project(project_id)
+    for sample in project.get_samples():
+        nb_read=0
+        for run_element in sample.get_run_elements():
+            tmp = run_element.get_nb_reads()
+            if tmp:
+                nb_read+=tmp
+        if nb_read>0:
+            print '%s --> %s'%(sample.get_external_id(), split_thousands(nb_read))
+
+
+if __name__=='1__main__':
+    positions=[('chab01',392400),('chab03',349500),('chab04',465800),('chab05',281400),
+               ('chab05',219580),('chab05',219864),('chab05',544696),('chab05',546004),
+               ('chab06',678400),('chab07',910000),('chab07',609473),('chab07',610175),
+               ('chab07',920434),('chab07',920624),('chab08',1184700),('chab09',112963),
+               ('chab09',113382),('chab09',113790),('chab09',113795),('chab09',113832),
+               ('chab10',719500),('chab11',355800),('chab11',540000),('chab11',950000),
+               ('chab11',1531375),('chab11',1531539),('chab12',926800),('chab12',729685),
+               ('chab12',729898),('chab12',865165),('chab12',865931),('chab12',1224246),
+               ('chab12',1224495),('chab12',1681837),('chab12',1683110),('chab13',1793000),
+               ('chab13',1644904),('chab13',1645633),('chab14',1758800),('chab14',1538887),
+               ('chab14',1538984),('chab14',1753889),('chab14',1755011),('chab14',1838265),
+               ('chab14',1838550)]
+    original_command = """python ~/workspace/pipeline_tools_python/sbin/get_genome_sequence.py"""
+    original_command +=""" -f /ifs/references/genomes/plasmodium_chabaudi/PlasmoDB-6.3/PchabaudiGenomic_PlasmoDB-6.3.fasta"""
+    original_command +=""" -c %s -r %s-%s |  awk '{print ">seq\\n"$0}' | /ifs/software/linux_x86_64/blast/blast-2.2.24/bin/blastall"""
+    original_command +=""" -p blastn -d /ifs/references/genomes/plasmodium_chabaudi/Sanger_sept09/blast/Chromosomes.Sep09.fasta -W 11 -m 8 -e 0.001"""
+    original_command +=""" | awk '{print $2"\\t"$9+%s-$7+1}' """
+    offsets=[50,500, 1000]
+    for i in range(len(positions)):
+        chr, position=positions[i]
+        if position !=1683110:
+            continue
+        all_new_positions=[]
+        for offset in offsets:
+            command = original_command%(chr,position-offset,position+offset,offset)
+            print command
+            stream,process = utils_commands.get_output_stream_from_command(command)
+            tmp_new_positions=[]
+            for line in stream:
+                tmp_new_positions.append(line.strip())
+            if len(tmp_new_positions)>1:
+                all_new_positions.append(tmp_new_positions[0])
+            else:
+                pass
+                #all_new_positions.append("None")
+        print '%s\t%s\t%s'%(chr,position,'\t'.join(all_new_positions))
+        
+if __name__=="1__main__":
+    command_template=""" awk '{if (NR%4==0) print }'| 
+awk '{ for ( i=1; i<=length; i++ ) arr[substr($0, i, 1)]++ }END{ for ( i in arr ) { print i, arr[i] } }' |
+perl -e 'while (<>) { ($c,$n)=split(/\s+/); print ord($c)-64,"\\t",$n,"\\n";}'"""
+    command_template=command_template.replace('\n',' ')
+    for parent_page, run_page_title in get_all_run_page_titles(type="SOLEXA"):
+        out=[]
+        if run_page_title.startswith("10"):
+            run_page = get_run_page_from_title(run_page_title, type="SOLEXA")
+            if run_page.run.get_chemistry_versions():
+                #print run_page_title
+                out.append(run_page_title)
+                out.append(run_page.run.get_chemistry_versions())
+                out.append(run_page.run.get_number_cycle())
+                out.append(run_page.run.get_read_status())
+                nb_reads=0
+                for lane in run_page.run.get_lanes():
+                    sample_str = ''.join(lane.get_sample_str().lower().split())
+                    if sample_str=='phix':
+                        seq_archive_files=find_seq_archive_file(run_page.run.id, lane.get_lane_number(),
+                                                                lane.get_index(), run_page.run.is_single_end())
+                        output_files=[]
+                        for server,file_path in seq_archive_files:
+                            if server is None:
+                                name, ext = os.path.splitext(os.path.basename(file_path))
+                                name, ext = os.path.splitext(name)
+                                output_file = os.path.join("/home/tcezard/run_quality_data/",run_page_title,name+"_control.qual")
+                                output_files.append(output_file)
+                                if not os.path.exists(output_file):
+                                    command_to_run="gunzip -c %s | %s > %s"%(file_path, command_template, output_file)
+                                    print command_to_run
+                        command = '''cat %s | awk '{total+=$2; if ($1>=30){Q30+=$2}} END{print Q30"\t"total}' '''%(' '.join(output_files))
+                        stream,process = get_output_stream_from_command(command)
+                        Q30=0
+                        total=0
+                        for line in stream:
+                            if len(line.strip())>0:
+                                Q30, total = line.split()
+                        if total>0:
+                            out.append(str(float(Q30)/float(total)))
+                        else:
+                            out.append("0")
+                        
+                                              
+                
+                
+                
+                
+                print ', '.join(out)
+if __name__=="1__main__":
+    utils_logging.init_logging(logging.DEBUG)
+
+    print get_wiki_project('2009133')
+    
+if __name__=="1__main__":
+    
+    command ='''mkdir ~/projects/Comparison_exon_capture/YYY/results_XXX; 
+samtools view -h ~/projects/*/YYY*/bwa_merged/*_run_elemt.bam | 
+python ~/workspace/pipeline_tools_python/sbin/resample_sam_file.py XXX | 
+samtools view -bT ~/genomes/homo_sapiens/hg19/hg19.fa - | 
+samtools sort - ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX;
+python ~/workspace/pipeline_tools_python/sbin/remove_duplicate_from_bam.py -s -b ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX.bam;
+samtools flagstat ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX_mrk_dup.bam > ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX_mrk_dup.bam.stat;
+samtools pileup ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX_mrk_dup.bam | 
+python ~/workspace/pipeline_tools_python/sbin/get_coverage_on_target.py -i PIPE -a ~/projects/Comparison_exon_capture/ccdsGene.txt.gz 
+-o ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX_ / > ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX_coverage.txt;
+samtools mpileup -ugDf ~/genomes/homo_sapiens/hg19/hg19.fa ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX_mrk_dup.bam | 
+bcftools view -vcgf - | /ifs/software/linux_x86_64/samtools/current/bcftools/vcfutils.pl varFilter -D 100000 | 
+awk '$6>30' > ~/projects/Comparison_exon_capture/YYY/results_XXX/YYY_XXX_samtools_snp.vcf'''
+    #command ='''mkdir ~/projects/Comparison_exon_capture/XXX/coverage_YYY/'''
+    str_to_replace1='YYY'
+    str_to_replace2='XXX'
+    new_strings =[]
+    new_strings ={'2010_SOL_SS341':['0.7141','0.5713','0.4284','0.2856','0.1428','0.0714','0.0357','0.0143','0.0071'],
+                  '2010_SOL_SS343':['0.6828','0.5462','0.4097','0.2731','0.1366','0.0683','0.0341','0.0137','0.0068'],
+                  '2010_SOL_SS344':['0.6001','0.4800','0.3600','0.2400','0.1200','0.0600','0.0300','0.0120','0.0060'],
+                  '2010_SOL_ES305':['0.9113','0.7291','0.5468','0.3645','0.1823','0.0911','0.0456','0.0182','0.0091'],
+                  '2010_SOL_ES306':['0.8886','0.7109','0.5332','0.3554','0.1777','0.0889','0.0444','0.0178','0.0089'],
+                  '2010_SOL_ES307':['0.9451','0.7561','0.5671','0.3780','0.1890','0.0945','0.0473','0.0189','0.0095'],
+                  '2010_SOL_ES308':['0.9726','0.7781','0.5835','0.3890','0.1945','0.0973','0.0486','0.0195','0.0097']}
+    new_strings ={'2011_SOL_MA197':['0.353977948','0.283182358','0.212386769','0.141591179','0.07079559','0.035397795','0.017698897','0.007079559','0.003539779'],
+                  '2011_SOL_MA198':['0.37030936','0.296247488','0.222185616','0.148123744','0.074061872','0.037030936','0.018515468','0.007406187','0.003703094'],
+                  '2011_SOL_MA199':['0.332297063','0.26583765','0.199378238','0.132918825','0.066459413','0.033229706','0.016614853','0.006645941','0.003322971'],
+                  '2011_SOL_MA200':['0.310785588','0.24862847','0.186471353','0.124314235','0.062157118','0.031078559','0.015539279','0.006215712','0.003107856'],
+                  '2011_SOL_MA201':['0.306461322','0.245169058','0.183876793','0.122584529','0.061292264','0.030646132','0.015323066','0.006129226','0.003064613'],
+                  '2011_SOL_MA202':['0.27105106','0.216840848','0.162630636','0.108420424','0.054210212','0.027105106','0.013552553','0.005421021','0.002710511'],
+                  '2011_SOL_MA208':['0.279472546','0.223578037','0.167683528','0.111789018','0.055894509','0.027947255','0.013973627','0.005589451','0.002794725'],
+                  '2011_SOL_MA209':['0.202777115','0.162221692','0.121666269','0.081110846','0.040555423','0.020277712','0.010138856','0.004055542','0.002027771'],
+                  '2011_SOL_MA210':['0.208520312','0.166816249','0.125112187','0.083408125','0.041704062','0.020852031','0.010426016','0.004170406','0.002085203'],
+                  '2011_SOL_MA211':['0.220049876','0.176039901','0.132029926','0.08801995','0.044009975','0.022004988','0.011002494','0.004400998','0.002200499']}
+
+    command=' '.join(command.split('\n'))
+    
+    for key in new_strings.keys():
+        tmp = command.replace(str_to_replace1, str(key))
+        for new_str in new_strings.get(key):
+            print tmp.replace(str_to_replace2,new_str)
+   
+if __name__=="1__main__":
+    import pprint
+    from IO_interface.exon_loader import Exon_annotation_Retriver
+    from get_coverage_on_target import get_ranges_and_extend_ranges
+    from overlap.Binnary_search_overlap import Binnary_search
+    utils_logging.init_logging(logging.CRITICAL)
+    target_region_file='/home/tcezard/projects/Comparison_exon_capture/ccdsGene.txt.gz'
+    vcf_file=sys.argv[1]
+    output_file= sys.argv[2]
+    annotation_retriver=Exon_annotation_Retriver(annotation_file=target_region_file)
+    all_target_per_chr, dummy = get_ranges_and_extend_ranges(annotation_retriver, extension=0)
+    open_file = open(vcf_file)
+    open_output_file = utils_logging.open_output_file(output_file)
+    curr_reference_name=''
+    count_total=0
+    count_in_target=0
+    count_out_target=0
+    for line in open_file:
+        if line.startswith('#'):
+            open_output_file.write(line.strip()+'\n')
+            continue
+        count_total+=1
+        sp_line = line.split('\t')
+        reference_name = sp_line[0]
+        position = int(sp_line[1])
+        if reference_name!=curr_reference_name:
+            #print 'start %s'%reference_name
+            all_target=all_target_per_chr.get(reference_name)
+            if all_target:
+                all_target_search=Binnary_search(all_target, close_query=True)
+            else:
+                logging.warning('No reference %s in %s'%(reference_name, target_region_file))
+            curr_reference_name=reference_name
+        if all_target_search:
+            results=all_target_search.ovarlap_search(position)
+        else:
+            results=[]
+        if len(results)>0:
+            open_output_file.write(line.strip()+'\n')
+            count_in_target+=1
+        else:
+            logging.debug('%s:%s is not in target defined in %s'%(reference_name, position, target_region_file))
+            count_out_target+=1
+    open_file.close()
+    open_output_file.close()
+    print '%s in target variant %s out of target %s total in %s.'%(count_in_target,count_out_target,count_total, sys.argv[1])
+    
+if __name__=="1__main__":
+    import pprint
+    from IO_interface.exon_loader import Exon_annotation_Retriver
+    from get_coverage_on_target import get_ranges_and_extend_ranges
+    from overlap.Binnary_search_overlap import Binnary_search
+    utils_logging.init_logging(logging.DEBUG)
+    target_region_file='/home/tcezard/projects/Comparison_exon_capture/ccdsGene.txt.gz'
+    vcf_file='/home/tcezard/projects/Comparison_exon_capture/2010_SOL_SS341/results_0.7141/2010_SOL_SS341_0.7141_samtools_snp.vcf'
+    annotation_retriver=Exon_annotation_Retriver(annotation_file=target_region_file)
+    all_target_per_chr, dummy = get_ranges_and_extend_ranges(annotation_retriver, extension=0)
+    open_file = open(vcf_file)
+    reference_name='chr22'
+    position1 = 16258186
+    position2 = 16287885
+    print 'start %s'%reference_name
+    all_target=all_target_per_chr.get(reference_name)
+    if all_target:
+        all_target_search=Binnary_search(all_target, close_query=True)
+    else:
+        logging.warning('No reference %s in %s'%(reference_name, target_region_file))
+    if all_target_search:
+        results=all_target_search.ovarlap_search(position1)
+    else:
+        results=[]
+    if len(results)>0:
+        logging.debug('%s:%s is in target'%(reference_name, position1))
+    else:
+        logging.debug('%s:%s is not in target defined in %s'%(reference_name, position1, target_region_file))
+        
+    #pprint.pprint(all_target_per_chr)
+    
+    
+
+if __name__=="1__main__":
+    #test sqlite
+    import time, sqlite3
+    database_file='/home/tcezard/database_file.sqlite'
+    self.connection=sqlite3.connect(database_file, check_same_thread=False)
+    self.connection.isolation_level=None
+    self.cursor=self.connection.cursor()
+    "CREATE TABLE"
+    
+
+def parse_fastqc_file(file):
+    open_file = utils_logging.open_input_file(file, pipe=False)
+    #section parse
+    section_name = None
+    section_dictionnary={}
+    for line in open_file:
+        if line.startswith('>>END_MODULE'):
+            section_name = None
+        elif line.startswith('>>'):
+            section_name = line.strip().strip('>>').split('\t')[0]
+            section_dictionnary[section_name]=[]
+        elif section_name:
+            section_dictionnary[section_name].append(line.strip())
+    open_file.close()
+    return section_dictionnary
+
+def get_per_base_sequence_content(file):
+    section_dictionnary=parse_fastqc_file(file)
+    key='Per base sequence content'
+    prop={'A':0,'C':0,'G':0,'T':0}
+    if section_dictionnary.has_key(key):
+        sums = [0,0,0,0]
+        base_order=[]
+        for line in section_dictionnary.get(key):
+            if line.startswith('#Base'):
+                base_order=line.strip().split('\t')[1:]
+            else:
+                all_nums = line.strip().split('\t')[1:]
+                for pos in range(len(all_nums)):
+                    sums[pos]+=int(all_nums[pos])
+        total=sums[0]+sums[1]+sums[2]+sums[3]
+        for pos, base in enumerate(base_order):
+            prop[base.strip()]=sums[pos]/float(total)
+    return prop
+
+if __name__=="1__main__":
+    bases = ['A','T','C','G']
+    print 'run_lane\tA\tT\tC\tG'
+    for file in sys.argv[1:]:
+        props = get_per_base_sequence_content(file)
+        out=[]
+        for base in bases:
+            out.append('%.2f'%(props.get(base)))
+        print file+'\t'+'\t'.join(out)
+
+if __name__=='1__main__':
+    from wiki_communication.wiki_pages_utils import get_run_page_from_title,get_all_run_page_titles
+    import glob
+    bases = ['A','T','C','G']
+    
+    all_page_parents_and_titles = get_all_run_page_titles(type='SOLEXA')
+    print 'run_lane\tA\tT\tC\tG'
+    for parent_page_title, run_page_title in all_page_parents_and_titles:
+        if run_page_title.startswith('08') or run_page_title.startswith('09'):
+            continue
+        run_page = get_run_page_from_title(run_page_title)
+        for run_element in run_page.run.get_lanes():
+            if run_element.get_sample_str().lower() == 'phix':
+                run_date = run_element.get_run().id.split('_')[0]
+                flowcell = run_element.get_run().id.split('_')[-1]
+                lane_number = run_element.get_lane_number()
+                path = '/home/tcezard/run_quality_data/%s*%s/%s*%s*%s*_fastqc/fastqc_data.txt'%(run_date,flowcell,run_date,flowcell,lane_number)
+                fastqc_data_paths = glob.glob(path)
+                for fastqc_data_path in fastqc_data_paths:
+                    props = get_per_base_sequence_content(fastqc_data_path)
+                    out=[]
+                    for base in bases:
+                        out.append('%.2f'%(props.get(base)))
+                    print fastqc_data_path+'\t'+'\t'.join(out)
+                    
+                    
+if __name__=='1__main__':
+    from IO_interface import vcfIO
+    input_file=sys.argv[1]
+    open_input = open(input_file)
+    reader = vcfIO.VcfReader(open_input)
+    for record in reader:
+        (strand_pv, baseQ_pv, mapQ_pv, tail_distance_pv) = record.get_biais_pvalue()
+        (ref_forward, ref_reverse, alt_forward, alt_reverse) = record.get_dp4_values()
+        if not strand_pv is None and float(strand_pv) != 1:
+            print strand_pv
+            #ref_forward, ref_reverse, alt_forward, alt_reverse
+            
+if __name__=='1__main__':
+    """Get the snps present in SS1 and SS3 but not in SS4"""
+    from IO_interface import vcfIO
+    input_file=sys.argv[1]
+    open_input = open(input_file)
+    reader = vcfIO.VcfReader(open_input)
+    for record in reader:
+        valid_genotype_SS1 = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=['SS1'])
+        valid_genotype_SS3 = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=['SS3'])
+        valid_genotype_SS4 = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=['SS4'])
+        genotype_cancer = set()
+        if len(valid_genotype_SS1.keys())>0:
+            genotype_cancer.update(valid_genotype_SS1.keys()[0].split('/'))
+        if len(valid_genotype_SS3.keys())>0:
+            genotype_cancer.update(set(valid_genotype_SS3.keys()[0].split('/')))
+        if len(valid_genotype_SS4.keys())>0 and valid_genotype_SS4.keys()[0] == '0/0' and genotype_cancer.issuperset(set('1')):
+            print record
+
+
+if __name__=="1__main__":
+    #read blast output
+    input_blast_file="/home/tcezard/genomes/apis_mellifera/amel_4.5_baylor/blast/output.blast"
+    #input_blast_file="/home/tcezard/genomes/apis_mellifera/amel_4.5_baylor/blast/output.blast.summary"
+    open_blast = open_input_file(input_blast_file)
+    current_query = None
+    min_evalue=100
+    all_flank_start={}
+    all_flank_end={}
+    line_read=0
+    min_sp_line=None
+    for line in open_blast:
+        line_read+=1
+        if line_read%100000==0:
+            sys.stderr.write('%s\n'%line_read)
+        sp_line = line.strip().split()
+        
+        if sp_line[0] == current_query:
+            if float(sp_line[10]) < min_evalue:
+                min_evalue = float(sp_line[10])
+                min_sp_line = sp_line
+        else:
+            if current_query:
+                if min_sp_line is None:
+                    min_sp_line = sp_line
+                if current_query.endswith('_1'):
+                    query=current_query[:-2]
+                    all_flank_start[query]=(min_sp_line[1], int(min_sp_line[8]), int(min_sp_line[9]))
+                else:
+                    query=current_query[:-2]
+                    all_flank_end[query]=(min_sp_line[1], int(min_sp_line[8]), int(min_sp_line[9]))
+            min_evalue=float(sp_line[10])
+            min_sp_line=sp_line
+            current_query=sp_line[0]
+    if current_query:
+        if min_sp_line is None:
+            min_sp_line=sp_line
+        if current_query.endswith('_1'):
+            query=current_query[:-2]
+            all_flank_start[query]=(min_sp_line[1], int(min_sp_line[8]), int(min_sp_line[9]))
+        else:
+            query=current_query[:-2]
+            all_flank_end[query]=(min_sp_line[1], int(min_sp_line[8]), int(min_sp_line[9]))
+    sys.stderr.write("load %d records in all_flank_start and %d records in all_flank_end\n"%(len(all_flank_start), len(all_flank_end)))
+    for query in all_flank_start:
+        if all_flank_end.has_key(query):
+            contig1, start1, end1 = all_flank_start.get(query)
+            contig2, start2, end2 = all_flank_end.get(query)
+            if contig1!=contig2:
+                sys.stderr.write("Error %s!=%s for query %s\n"%(contig1,contig2,query))
+            if start2-end1==2:
+                print query, contig1, end1+1 
+            elif end1-start2==2:
+                print query, contig1, start2+1
+                
+                
+if __name__=="1__main__":
+    #project 2011076
+    #get the whole genome coverage file as the first argument and the bin size as the second: output binned/ normalized coverage.
+    #the expected sample order is DL1777_2 DL2151_2 DL2859_2 DL2874_2 DL1777_3 DL2151_3 DL2859_3 DL2874_3 DL1777_4 DL2151_4 DL2859_4 DL2874_4 
+    file=sys.argv[1]
+    open_stream = open(file)
+    #bin_size=int(sys.argv[2])
+    coverage_values=[0,0,0,0,0,0,0,0,0,0,0,0]
+    normalization_fact=[2764191129,2604839550,3320960169,2702248773,2726629035,2680850525,1941869590,2623389232,2405986602,2393477791,2192083354,2074790752]
+#    for i in range(len(normalization_fact)):
+#        normalization_fact[i]=float(normalization_fact[i])/100000000
+#    current_bin=-1
+#    for line in open_stream:
+#        sp_line = line.strip().split()
+#        bin=int(sp_line[0])/bin_size
+#        if bin!=current_bin:
+#            if current_bin>=0:
+#                sys.stdout.write('%.0f'%((current_bin+0.5)*bin_size))
+#                for i,v in enumerate(coverage_values):
+#                    sys.stdout.write(' %s'%(v/bin_size/normalization_fact[i]))
+#                print
+#            coverage_values=[0,0,0,0,0,0,0,0,0,0,0,0]
+#            current_bin=bin
+#        for i,value in enumerate(sp_line[1:]):
+#            coverage_values[i]+=int(value)
+    window_size=10
+    window_step=2
+    list_of_windows=[[],[],[],[],[],[],[],[],[],[],[],[]]
+    step=0
+    size=0
+    for line in open_stream:
+        sp_line = line.strip().split()
+        for i,value in enumerate(sp_line[1:]):
+            list_of_windows[i].append(int(value))
+        step+=1
+        size+=1
+        if size > window_size:
+            for window in list_of_windows:
+                window.pop(0)
+            size-=1
+            if step>=window_step:
+                print '%s\t%s'%(int(sp_line[0])-window_size/2,'\t'.join(['%.2f'%(float(sum(window))/window_size) for window in list_of_windows]))
+                step=0
+
+
+if __name__=="1__main__":
+    #extract RAD consensuses fasta record from a large set
+    file1=sys.argv[1]
+    file2=sys.argv[2]
+    open_file1=open(file1)
+    open_file2=open(file2)
+    all_keys={}
+    for line in open_file1:
+        all_keys[line.strip()]=1
+    open_file1.close()
+    
+    line = open_file2.readline()
+    while line:
+        header=line.strip()
+        fasta_rec=open_file2.readline()
+        
+        if all_keys.has_key(header[1:]):
+            print header.strip()
+            print fasta_rec.strip()
+        line = open_file2.readline()
+    open_file1.close()
+    
+if __name__=="1__main__":
+    all_files=sys.argv[1:]
+    all_consensus={}
+    for file in all_files:
+        open_file=open(file)
+        for line in open_file:
+            sp_line=line.strip().split()
+            values=all_consensus.get(sp_line[0])
+            if values:
+                val1,val2=values
+                val1+=int(sp_line[1])
+                val2+=int(sp_line[2])
+            else:
+                val1=int(sp_line[1])
+                val2=int(sp_line[2])
+            all_consensus[sp_line[0]]=(val1,val2)
+    for consensus in all_consensus.keys():
+        val1,val2=all_consensus.get(consensus)
+        print "%s\t%s\t%s"%(consensus,val1,val2)
+
+if __name__=="1__main__":
+    def recursive_size_of_directory(directory):
+        size_of_dir=os.stat(directory).st_size
+        list_of_path = os.listdir(directory)
+        for path in list_of_path:
+            path=os.path.join(directory,path)
+            if os.path.isdir(path):
+                size_of_dir+=recursive_size_of_directory(path)
+            else:
+                size_of_dir+=os.stat(path).st_size
+        print size_of_dir,directory
+        return size_of_dir
+    print recursive_size_of_directory("/home/tcezard/")
+    
+if __name__=="1__main__":
+    #upload the same run page but update the links
+    utils_logging.init_logging(logging.DEBUG)
+    run_page_title=sys.argv[1]
+    run_page = get_run_page_from_title(run_page_title)
+    run_page.upload_to_wiki(test_wiki=True)
+
+if __name__=="1__main__":
+    input_files=sys.argv[1:]
+    def get_data_per_barcode_from_file(file):
+        open_file = open(file)
+        all_data={}
+        in_barcode=False
+        for line in open_file:
+            if line.strip()=="":
+                in_barcode=False
+            if in_barcode:
+                sp_line = line.strip().split()
+                all_data[sp_line[0]]=(int(sp_line[1]), int(sp_line[2]))
+            if line.strip()=="Barcode\tTotal\tNo RadTag\tRetained":
+                in_barcode=True
+        open_file.close()
+        return all_data
+    data_per_barcode_per_file={}
+    ordered_name=[]
+    all_sums_per_project={}
+    for file in input_files:
+        project_name=file.split('/')[4]
+        number=2
+        if project_name in ordered_name:
+            while project_name+"_%s"%number in ordered_name:
+                number+=1
+            project_name=project_name+"_%s"%number
+        total_nb_reads=0
+        count_barcode=0
+        ordered_name.append(project_name)
+        data_per_barcode = get_data_per_barcode_from_file(file)
+        for barcode in data_per_barcode.keys():
+            data_per_file = data_per_barcode_per_file.get(barcode)
+            if not data_per_file:
+                data_per_file={}
+                data_per_barcode_per_file[barcode]=data_per_file
+            data_per_file[project_name]=data_per_barcode.get(barcode)
+            (total, no_rad_tag) = data_per_barcode.get(barcode)
+            total_nb_reads+=total
+            count_barcode+=1
+        all_sums_per_project[project_name]=(total_nb_reads,count_barcode)
+        
+    print "\t%s"%"\t\t\t\t".join(ordered_name)
+    for barcode in data_per_barcode_per_file.keys():
+        count=0
+        data_per_file = data_per_barcode_per_file.get(barcode)
+        out=[]
+        sum=0
+        for project_name in ordered_name:
+            data = data_per_file.get(project_name)
+            if data:
+                (total, no_rad_tag)=data
+                count+=1
+                out.append(str(total))
+                out.append(str(no_rad_tag))
+                percent = float(no_rad_tag)/total
+                out.append("%.2f%%"%(percent*100))
+                (total_nb_reads,count_barcode) = all_sums_per_project.get(project_name)
+                out.append("%.2f"%(float(total)/total_nb_reads*count_barcode))
+                sum+=percent
+            else:
+                out.append("NA")
+                out.append("NA")
+                out.append("NA")
+                out.append("NA")
+            
+        print "%s\t%s\t%s\t%.2f%%"%(barcode,"\t".join(out), count, sum/count*100)
+                    
+if __name__=="1__main__":
+    input_file=sys.argv[1]
+    from utils import GenomeLoader
+    import re
+    loader = GenomeLoader.GenomeLoader(input_file)
+    all_site_sequences={"SbfI":"CCTGCAGG",
+                        "PstI":"CTGCAG",
+                        "NsiI":"ATGCAT",
+                        "NotI":"GCGGCCGC",
+                        "EaeI":"[CT]GGCC[AG]",
+                        "EagI":"CGGCCG",
+                        "EcoRI":"GAATTC",
+                        "ApoI":"[AG]AATT[CT]",
+                        "MfeI":"CAATTG",
+                        "BamHI":"GGATCC",
+                        "BclI":"TGATCA",
+                        "BglII":"AGATCT",
+                        "BstYI":"[AG]GATC[CT]",
+                        "BbvCI":"CCTCAGC"}
+    all_site_sequences={"PstI":"CTGCAG"}
+    
+    total=0
+    total_sequence=0
+    total_GC=0
+    all_total={}
+    all_patterns={}
+    all_sequences={}
+    for enz in all_site_sequences.keys():
+        all_total[enz]=0
+        all_patterns[enz]=re.compile(all_site_sequences.get(enz))
+    
+    for header, sequence in loader:
+        sequence=sequence.upper()
+        for enz in all_site_sequences.keys():
+            all_matches=all_patterns.get(enz).finditer(sequence)
+            for match in all_matches:
+                seq1=sequence[match.start()-95:match.start()+5]
+                seq2=sequence[match.start()+1:match.start()+101]
+                if all_sequences.has_key(seq1):
+                    all_sequences[seq1]+=1
+                else:
+                    all_sequences[seq1]=1
+                if all_sequences.has_key(seq2):
+                    all_sequences[seq2]+=1
+                else:
+                    all_sequences[seq2]=1
+                all_total[enz]+=1
+                print "%s\t%s"%(header, match.start()+1)
+    #for count in all_sequences.values():
+    #    print count
+    #for enz in all_site_sequences.keys():
+    #    print "enzyme=%s, sequence=%s, total=%s"%(enz, all_site_sequences.get(enz), all_total.get(enz))
+
+if __name__=="1__main__":
+    file_name=sys.argv[1]
+    nb_read = int(sys.argv[2])
+    name,ext=os.path.splitext(file_name)
+    nb_reads_finals=[10000,50000,100000,200000,500000,1000000,2000000,4000000]
+    for nb_reads_final in nb_reads_finals:
+        factor=float(nb_reads_final)/nb_read
+        if factor>1:
+            break
+        output_file=name+"_%sK.bam"%(nb_reads_final/1000)
+        command='java -Xmx2G -jar /ifs/software/linux_x86_64/Picard/current/DownsampleSam.jar VALIDATION_STRINGENCY=SILENT '
+        command+='I=%s O=%s P=%.4f'%(file_name,output_file,factor)
+        print command
+        
+        
+        
+if __name__=="1__main__":
+    utils_logging.init_logging(logging.INFO)
+    project_page_titles = get_all_project_page_title()
+    output_file=sys.argv[1]
+    open_output=open(output_file,'w')
+    for project_page_title in project_page_titles:
+        if project_page_title.startswith("2011") or\
+           project_page_title.startswith("2012"):
+            try:
+                project_page = get_project_page_from_title(project_page_title)
+                if not project_page.project.get_sequencing_platform() == "platform-454":
+                    for sample in project_page.project.get_samples():
+                        if sample.has_run_element():
+                            run_elements = sample.get_run_elements()
+                            for run_element in run_elements:
+                                if run_element.get_index()=="SA_PE_024":
+                                    open_output.write("%s -- %s -- %s\n"%(project_page_title, sample.id, run_element.id))
+            except Exception, e:
+                open_output.write("project page %s should be checked manually\n"%project_page_title)
+    open_output.close()
+
+if __name__=="1__main__":
+    import re
+    mismatch_threshold=int(sys.argv[1])
+    for line in sys.stdin:
+        if line.startswith("@"):
+            if line.startswith("@SQ"):
+                print '\t'.join(line.strip().split('\t')[:3])
+            else:
+                print line.strip()
+        else:
+            
+            sam_record = Sam_record(line)
+            mismatches = sam_record.get_tag("MD")
+            if mismatches:
+                list = re.findall('[ATCG]',mismatches)
+                if len(list)>mismatch_threshold:
+                    sam_record.set_unaligned()
+            print str(sam_record).strip()
+            
+if __name__=="__main__":
+    from get_sample_sheet_from_wiki import barcode_to_avoid_lookup
+    
+    for line in sys.stdin:
+        name,id = line.strip().split()
+        id=id.replace('_','-')
+        seq = barcode_to_avoid_lookup.get(id)
+        print '%s\t%s'%(name,seq)
+        
+if __name__=="1__main__":
+    from get_sample_sheet_from_wiki import barcode_to_avoid_lookup
+    revere_lookup={}
+    for key, value in barcode_to_avoid_lookup.iteritems():
+        revere_lookup[value]=key
+        
+    for line in sys.stdin:
+        sequence = line.strip()
+        id = revere_lookup.get(sequence)
+        print '%s\t%s'%(sequence,id)
+R_script = """library(ggplot2)
+data<-read.delim("%s",header=FALSE)
+melted_data <- melt(data.frame(position=data$V1,start=data$V2,end=data$V3,cov=data$V4), id.vars=c("position"))
+png("%s")
+ggplot(melted_data, aes(x=position,y=value,color=variable)) + geom_line() + opts(title=paste("%s",sum(data$V2),"reads"))
+dev.off()
+"""
+if __name__=="1__main__":
+    all_distributions={}
+    for line in sys.stdin:
+        sp_line = line.strip().split('\t')
+        if not all_distributions.has_key(sp_line[1].strip()):
+            all_distributions[sp_line[1].strip()]=({},{},{},{},{},{})
+        dist_qstart,dist_qend,dist_tstart,\
+        dist_tend, dist_qcov, dist_tcov= all_distributions.get(sp_line[1].strip())
+        if dist_qstart.has_key(int(sp_line[6])): dist_qstart[int(sp_line[6])]+=1
+        else: dist_qstart[int(sp_line[6])]=1
+        
+        if dist_qend.has_key(int(sp_line[7])): dist_qend[int(sp_line[7])]+=1
+        else: dist_qend[int(sp_line[7])]=1
+        
+        if dist_tstart.has_key(int(sp_line[8])): dist_tstart[int(sp_line[8])]+=1
+        else: dist_tstart[int(sp_line[8])]=1
+        
+        if dist_tend.has_key(int(sp_line[9])): dist_tend[int(sp_line[9])]+=1
+        else: dist_tend[int(sp_line[9])]=1
+        
+        for i in range(int(sp_line[6]), int(sp_line[7])):
+            if dist_qcov.has_key(i): dist_qcov[i]+=1
+            else: dist_qcov[i]=1
+        
+        for i in range(int(sp_line[8]), int(sp_line[9])):
+            if dist_tcov.has_key(i): dist_tcov[i]+=1
+            else: dist_tcov[i]=1
+    rscript_out=[]
+    for type in all_distributions.keys():
+        dist_qstart, dist_qend, dist_tstart, \
+        dist_tend, dist_qcov, dist_tcov= all_distributions.get(type)
+        all_qkeys=dist_qcov.keys()
+        all_tkeys=dist_tcov.keys()
+        output_file='%s_query.dist'%type
+        open_output_file=open(output_file,'w')
+        for pos in all_qkeys:
+            out=[str(pos)]
+            val=dist_qstart.get(pos)
+            if val:out.append(str(val))
+            else:out.append("0")
+            val=dist_qend.get(pos)
+            if val:out.append(str(val))
+            else:out.append("0")
+            val=dist_qcov.get(pos)
+            if val:out.append(str(val))
+            else:out.append("0")
+            open_output_file.write('\t'.join(out)+'\n')
+        open_output_file.close()
+        output_png='%s_query.png'%type
+        rscript_out.append(R_script%(output_file,output_png,'position of %s hit in'%type))
+        
+        output_file='%s_target.dist'%type
+        open_output_file=open(output_file,'w')
+        for pos in all_tkeys:
+            out=[str(pos)]
+            val=dist_tstart.get(pos)
+            if val:out.append(str(val))
+            else:out.append("0")
+            val=dist_tend.get(pos)
+            if val:out.append(str(val))
+            else:out.append("0")
+            val=dist_tcov.get(pos)
+            if val:out.append(str(val))
+            else:out.append("0")
+            open_output_file.write('\t'.join(out)+'\n')
+        open_output_file.close()
+        output_png='%s_target.png'%type
+        rscript_out.append(R_script%(output_file,output_png,'coverage of %s by'%type))
+    open_rscript = open("rscript.R",'w')
+    open_rscript.write('\n'.join(rscript_out))
+    open_rscript.close()
+    command_runner.set_command_to_run_localy()
+    utils_logging.init_logging()
+    command = "Rscript  --quiet --vanilla rscript.R"
+    print command
+    #return_code = utils_commands.launchCommandLocally(command,verbose=True)
+    #process = command_runner.run_command_no_wait(command)
+    #return_code = process.wait()
+    #return_code = os.popen(command, restore_sigpipe=True)
+    #print return_code
+    #os.remove("rscript.R")

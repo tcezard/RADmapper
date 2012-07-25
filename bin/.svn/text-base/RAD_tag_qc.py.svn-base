@@ -1,0 +1,152 @@
+'''
+Created on 21 Jan 2010
+
+@author: tcezard
+'''
+#!/usr/bin/env python
+import sys, logging
+from optparse import OptionParser
+import re
+from utils.Binning import Distribution_holder
+from utils.utils_commands import get_output_stream_from_command
+from utils import utils_logging
+import os
+
+def get_median_coverage_per_contig(open_mpileup_stream, output_file='median_coverage_all_samples.txt',sample_names=[]):
+    all_dists=[]
+    open_output = open(output_file,'w')
+    open_output.write('#contig_name\t%s\n'%('\t'.join(sample_names) ))
+    line = open_mpileup_stream.readline()
+    sp_line=line.strip().split()
+    curr_contig=sp_line[0]
+    for i in range(len(sp_line)/3-1):
+        all_dists.append(Distribution_holder());
+        all_dists[i].add_value(sp_line[(i+1)*3])
+        
+    for line in open_mpileup_stream:
+        sp_line=line.strip().split()
+        if curr_contig!=sp_line[0]:
+            out=[curr_contig]
+            for i in range(len(sp_line)/3-1):
+                out.append(all_dists[i].get_percentiles(50)[0])
+                all_dists[i]=Distribution_holder();
+                all_dists[i].add_value(sp_line[(i+1)*3])
+            curr_contig=sp_line[0]
+            open_output.write('%s\n'%('\t'.join(['%s'%s for s in out])))
+            yield out
+        for i in range(len(sp_line)/3-1):
+            all_dists[i].add_value(sp_line[(i+1)*3])
+    open_output.close()
+            
+def get_median_coverage_from_file(file):
+    open_file = open(file)
+    for line in open_file:
+        if line.startswith('#'):
+            continue
+        yield line.strip().split()
+    open_file.close()
+def bin(a):
+    s=''
+    t={'0':'000','1':'001','2':'010','3':'011',
+       '4':'100','5':'101','6':'110','7':'111'}
+    for c in oct(a)[1:]:
+            s+=t[c]
+    return s
+
+def get_coverage_pattern(array_of_coverage, coverage_threshold=0):
+    #pattern=0
+    pattern=''
+    for i, cov in enumerate(array_of_coverage):
+        if int(cov)>coverage_threshold:
+            pattern += '1'
+        else:
+            pattern += '0'
+    return pattern
+        
+           
+
+def qc_of_RAD_tags(bam_files, output_file='median_coverage_all_samples.txt'):
+    if os.path.exists(output_file):
+        median_coverage,sample_names=get_median_coverage_from_file(output_file)
+    else:
+        command = "samtools mpileup -d 20000 -A %s "%(' '.join(bam_files))
+        sample_names=[]
+        for file in bam_files:
+            sample_names.append(file.replace('.bam','').replace('_sorted',''))
+        stream,process = get_output_stream_from_command(command)
+        median_coverage = get_median_coverage_per_contig(stream,output_file,sample_names)
+    all_arrays_of_value={}
+    for contig_plus_coverage_array in median_coverage:
+        pattern = get_coverage_pattern(contig_plus_coverage_array[1:])
+        #print '\t'.join(contig_plus_coverage_array)
+        #print pattern
+        array_of_value=all_arrays_of_value.get(pattern)
+        if array_of_value is None:
+            array_of_value=[]
+            for i in range(len(contig_plus_coverage_array)-1):
+                array_of_value.append((0,0))
+                
+            all_arrays_of_value[pattern]=array_of_value
+        
+        for i, cov in enumerate(contig_plus_coverage_array[1:]):
+            sum, nb_val = array_of_value[i]
+            sum+=int(cov)
+            nb_val+=1
+            array_of_value[i]=(sum, nb_val)
+    
+    for pattern in all_arrays_of_value.keys():
+        array_of_value = all_arrays_of_value.get(pattern)
+        #sys.stdout.write('%s'%pattern)
+        nb_val=0
+        nb_allele=0
+        out=[]
+        for (sum, nb_val) in array_of_value:
+            if sum>0:
+                nb_allele+=1
+            out.append('%s'%sum)
+        sys.stdout.write('%s\t%s\t%s\n'%(nb_allele,nb_val,'\t'.join(out)))
+            
+
+def main():
+    #initialise the logging
+    utils_logging.init_logging()
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    
+    bam_files=args
+    
+    qc_of_RAD_tags(bam_files)
+    
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog """
+    description = """"""
+    
+    prog_version='0'
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()
+    

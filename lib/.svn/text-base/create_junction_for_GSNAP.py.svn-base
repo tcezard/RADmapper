@@ -1,0 +1,105 @@
+import sys, logging
+from optparse import OptionParser
+from IO_interface import annotation_loader
+from utils import utils_logging
+
+prog_version="0.1.1"
+
+
+class Junction_creator():
+    """This"""
+    def __init__(self, annotation_file):
+        """Constructor:
+        @param annotation_file: An file containing annotation.
+        @param all_junction: Set the Junction creator to generate all the possible junction between the exons of a transcript."""
+        self.annotation_retriver = annotation_loader.Annotation_Retriver(annotation_file=annotation_file)
+        self.all_reference=self.annotation_retriver.get_chr_names()
+    
+    def output_GSNAP_junction(self, output_file):
+        """return the next set of junction and the chromosome name associated to it.
+        The junctions are constructed from the directly consecutive exon - exon
+        ie: for a 4 exons transcript 3 junctions will be constructed: 1-2, 2-3, and 3-4  
+        --> (chr, junctions_for_chr).
+        The format of the junctions is 'exon1_end-exon2_start_strand'"""
+        output_stream = open(output_file,'w')
+        for reference in self.all_reference:
+            all_genes = self.annotation_retriver.get_annotation_from_chr(reference)
+            for gene in all_genes:
+                for transcript in gene.transcript_list:
+                    for pos in range(1,len(transcript.exon_list)):
+                        donor_exon = transcript.exon_list[pos-1]
+                        acceptor_exon = transcript.exon_list[pos]
+                        if transcript.strand=='+':
+                            donor_pos_s = donor_exon.exon_end
+                            donor_pos_e = donor_exon.exon_end+1
+                            acceptor_pos_s = acceptor_exon.exon_start-1
+                            acceptor_pos_e = acceptor_exon.exon_start
+                        else:
+                            donor_pos_s = donor_exon.exon_start
+                            donor_pos_e = donor_exon.exon_start-1
+                            acceptor_pos_s = acceptor_exon.exon_end+1
+                            acceptor_pos_e = acceptor_exon.exon_end
+                            
+                        output_stream.write(">%s.exon%s/%s %s:%s..%s donor %s\n"%(donor_exon.transcript.transcript_id, donor_exon.get_exon_number(), 
+                                                                                donor_exon.transcript.get_number_of_exons(), donor_exon.transcript.gene.reference,
+                                                                                donor_pos_s, donor_pos_e, abs(acceptor_pos_s-donor_pos_e)+1))
+                        output_stream.write(">%s.exon%s/%s %s:%s..%s acceptor %s\n"%(acceptor_exon.transcript.transcript_id, acceptor_exon.get_exon_number(), 
+                                                                                   donor_exon.transcript.get_number_of_exons(), acceptor_exon.transcript.gene.reference,
+                                                                                   acceptor_pos_s, acceptor_pos_e, abs(acceptor_pos_s-donor_pos_e)+1))
+        output_stream.close()
+    
+
+
+def create_junction_for_GSNAP(annotation_file, output_file):
+    junction_creator = Junction_creator(annotation_file)
+    junction_creator.output_GSNAP_junction(output_file)
+ 
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.DEBUG)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    create_junction_for_GSNAP(options.annotation_file, options.output_file)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-a annotation_file> <-o output_file>"""
+    description = """This script create junction in text file as expected by GSNAP. It can take annotation file in GFF, GTF, file downloaded from UCSC or bed files"""
+    optparser = OptionParser(version="%prog "+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-a","--annotation_file",dest="annotation_file",type="string",
+                         help="The file containing the annotation.")
+    optparser.add_option("-o","--output_file",dest="output_file",type="string",
+                         help="The file where the junction should be output.")
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.annotation_file:
+        logging.error("You must specify the annotation file -a.")
+        arg_pass=False
+    if not options.output_file:
+        logging.error("You must specify an output file with -o.")
+        arg_pass=False
+    return arg_pass
+
+
+ 
+ 
+if __name__=="__main__":
+    main()
+    

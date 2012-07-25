@@ -1,0 +1,27 @@
+# -*- coding: utf-8 -*-
+'''
+Created on 23 February 2012
+@author: tcezard
+'''
+import sys, os
+from IO_interface import vcfIO
+
+
+if __name__=='__main__':
+    """Get the snps present in High not in Low and the other way around"""
+    input_file=sys.argv[1]
+    if len(sys.argv)>2:
+        genotype_quality=int(sys.argv[2])
+    else:
+        genotype_quality=20
+    open_input = open(os.path.abspath(input_file))
+    reader = vcfIO.VcfReader(open_input)
+    sample_name = reader.get_sample_names()
+    print reader.get_header_lines()
+    for record in reader:
+        valid_genotypes = record.get_valid_genotype_per_sample(genotype_quality_threshold=genotype_quality)
+        if len(valid_genotypes.keys())==1:
+            genotype1 = valid_genotypes.keys()[0]
+            if len(valid_genotypes.get(genotype1)) == len(sample_name):
+                print record
+    open_input.close()

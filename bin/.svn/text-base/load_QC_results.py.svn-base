@@ -1,0 +1,244 @@
+'''
+Created on 27 Jul 2010
+
+@author: tcezard
+'''
+import logging, re
+import utils
+import sys
+from optparse import OptionParser
+from wiki_communication.wiki_ids import get_run_id_from_page_title
+from wiki_communication import create_wiki_run
+from utils import utils_logging, copy_file_across, utils_commands
+import os
+from utils.utils_param import get_pipeline_places
+import command_runner
+
+
+HEADER_LANE_NUMBER="Lane"
+HEADER_PF_READCOUNT="pfReadCount"
+HEADER_PASS_QUAL_READCOUNT="FastX_quality_filtered_readcount"
+
+HEADER_INDEX_ID="Index"
+HEADER_FILE="ReadsFile"
+#HEADER_NUM_READS_WITH_ADAPTER="Num_reads_containing_Adapters"
+HEADER_NUM_READS_WITH_ADAPTER="Num_reads_containing_Full_length_Adapters"
+HEADER_FASTQC_LINK="FastQC_dir"
+HEADER_FASTX_BOXPLOT="FastX_boxplot"
+
+lanes_file_headers=[HEADER_LANE_NUMBER,HEADER_PF_READCOUNT,HEADER_PASS_QUAL_READCOUNT]
+index_files_headers=[HEADER_LANE_NUMBER,HEADER_PF_READCOUNT,HEADER_PASS_QUAL_READCOUNT,
+                     HEADER_FILE,HEADER_NUM_READS_WITH_ADAPTER,HEADER_FASTX_BOXPLOT,
+                     HEADER_FASTQC_LINK]
+
+def load_QC(run_name, lanes_file, index_files, no_attachement,real=False):
+    pipeline_places = get_pipeline_places()
+    webserver_run_info = pipeline_places.get_webserver_run_info()
+    if len(webserver_run_info.split(':'))>1:
+        webserver, run_info_dest_dir = webserver_run_info.split(':')
+    else:
+        webserver=None
+        run_info_dest_dir = webserver_run_info
+    
+    run_id = get_run_id_from_page_title(run_name)
+    if run_id:
+        run = create_wiki_run(run_id)
+        run.get_run_elements()
+    else:
+        logging.critical("Can't recognise %s as a run name"%(run_name))
+        return
+    open_lanes_file = open(lanes_file)
+    headers=[]
+    for line in open_lanes_file:
+        if line.startswith("#"):
+            headers=line.strip().strip('#').split('\t')
+            for header in lanes_file_headers:
+                if not header in headers:
+                    logging.error("%s is missing from the header in %s"%(header,lanes_file))
+                    return False
+            continue
+        sp_line = line.strip().split('\t')
+        lane_number = int(sp_line[headers.index(HEADER_LANE_NUMBER)])
+        pf_read_count = int(sp_line[headers.index(HEADER_PF_READCOUNT)])
+        pass_qual_filter_read_count = int(sp_line[headers.index(HEADER_PASS_QUAL_READCOUNT)])
+        lane = run.get_lane(lane_number)
+        lane.add_info(nb_reads=pf_read_count/2)
+    open_lanes_file.close()
+    
+    open_index_file = open(index_files)
+    curr_directory=os.path.dirname(index_files)
+    for line in open_index_file:
+        if line.startswith("#"):
+            headers=line.strip().strip('#').split('\t')
+            for header in index_files_headers:
+                if not header in headers:
+                    logging.error("%s is missing from the header in %s"%(header,index_files))
+                    return False
+            continue
+        sp_line = line.strip().split('\t')
+        lane_number = int(sp_line[headers.index(HEADER_LANE_NUMBER)])
+        fastqfile = sp_line[headers.index(HEADER_FILE)]
+        index_id=sp_line[headers.index(HEADER_INDEX_ID)].replace('_','-')
+        match = re.match(".*%s_%s([1,2])\.sanfastq\.gz"%(lane_number,index_id),fastqfile)
+        if match:
+            read_number=match.group(1)
+        else:
+            read_number=None
+        reads_with_adapter_count=0
+        pass_qual_filter_read_count=0
+        pf_read_count=0
+        if sp_line[headers.index(HEADER_PF_READCOUNT)]:
+            pf_read_count = int(sp_line[headers.index(HEADER_PF_READCOUNT)])
+        if sp_line[headers.index(HEADER_PASS_QUAL_READCOUNT)]:
+            pass_qual_filter_read_count = int(sp_line[headers.index(HEADER_PASS_QUAL_READCOUNT)])
+        if sp_line[headers.index(HEADER_NUM_READS_WITH_ADAPTER)]:
+            reads_with_adapter_count = float(sp_line[headers.index(HEADER_NUM_READS_WITH_ADAPTER)])
+            
+        fastQC_link = sp_line[headers.index(HEADER_FASTQC_LINK)]
+        if not is_link(fastQC_link):
+            fastQC_path=find_file(fastQC_link,curr_directory)
+            if fastQC_path:
+                fastQC_link = upload_fastqc_report_to_webserver(fastQC_path,run_id,webserver,run_info_dest_dir)
+            else:
+                logging.warning("File not found: %s"%sp_line[headers.index(HEADER_FASTQC_LINK)])
+                fastQC_link=None
+        fastX_boxplot = sp_line[headers.index(HEADER_FASTX_BOXPLOT)]
+        fastX_boxplot = find_file(fastX_boxplot,curr_directory)
+        if not fastX_boxplot:
+            logging.warning("File not found: %s"%sp_line[headers.index(HEADER_FASTX_BOXPLOT)])
+            fastX_boxplot=None
+        run_element = run.get_run_element(lane_number, index_id)
+        if run_element:
+            #Feed in the information to the run elements
+            if read_number is None or read_number=="1":
+                run_element.add_info(nb_reads=pf_read_count, nb_reads_pass_qual_1=pass_qual_filter_read_count,
+                             nb_reads_with_adapter_1=reads_with_adapter_count, fastqc_report_links_1=fastQC_link)
+                if fastX_boxplot:
+                    run_element.add_file(file_path=fastX_boxplot, field='qual_box_plot1', add_attachement= not no_attachement)
+                    #run_element.add_info(qual_box_plot1=os.path.basename(fastX_boxplot))
+            elif read_number=="2":
+                run_element.add_info(nb_reads=pf_read_count, nb_reads_pass_qual_2=pass_qual_filter_read_count,
+                             nb_reads_with_adapter_2=reads_with_adapter_count, fastqc_report_links_2=fastQC_link)
+                if fastX_boxplot:
+                    run_element.add_file(file_path=fastX_boxplot, field='qual_box_plot2', add_attachement= not no_attachement)
+                    #run_element.add_info(qual_box_plot2=os.path.basename(fastX_boxplot))
+                
+                
+        else:
+            logging.warning("no index %s for lane %s found on the wiki"%(index_id,lane_number))
+    if real:
+        a,b = run.run_page.upload_to_wiki(test_wiki=False)
+    else:
+        a,b = run.run_page.upload_to_wiki(test_wiki=True)
+    open_lanes_file.close()
+    print a
+    print b
+    
+def is_link(link):
+    if link.startswith("http"):
+        return True
+    return False
+
+
+def upload_fastqc_report_to_webserver(fastqc_report, run_id, server, dest_dir):
+    run_dir=os.path.join(dest_dir, run_id)
+    #Test if the file is already there
+    name,ext = os.path.splitext(os.path.basename(fastqc_report))
+    dir=os.path.join(run_dir,name)
+    command = 'ssh %s "ls -1d %s"'%(server, dir)
+    stream, process = utils_commands.get_output_stream_from_command(command, logger_name=None)
+    line=None
+    for line in stream:
+        line=line.strip()
+        if line == dir:
+            break
+    if line != dir:
+        utils.createDirectories('', [run_dir], server)
+        copy_file_across(source=fastqc_report, destination=run_dir, server_destination=server, overwrite=True)
+        command = 'ssh %s "cd %s; unzip -o %s"'%(server, run_dir,os.path.basename(fastqc_report))
+        command_runner.run_command(command)
+        command = 'ssh %s "rm -f %s"'%(server, os.path.join(run_dir,os.path.basename(fastqc_report)))
+        command_runner.run_command(command)
+        command = 'ssh %s "chmod -R 775 %s"'%(server, run_dir)
+        command_runner.run_command(command)
+    return os.path.join("http://genepool.bio.ed.ac.uk/Gene_Pool/run_info",run_id,name,"fastqc_report.html")
+
+def find_file(path,curr_dir):
+    if os.path.exists(path):
+        return path
+    new_path = os.path.join(curr_dir,os.path.basename(path))
+    if os.path.exists(new_path):
+        return new_path
+    #new_path = os.path.abspath(os.path.basename(path))
+    #if os.path.exists(new_path):
+    #    return new_path
+    return None
+
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    command_runner.set_command_to_run_localy()
+    if options.debug:
+        utils_logging.init_logging(logging.DEBUG)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    
+    load_QC(options.run_name,options.lane_file,options.demultiplexed_file, options.no_attachement, options.real)
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script will upload lane and index results onto the wiki for one run"""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-r","--run_name",dest="run_name",type="string",
+                         help="Name of the run. Default: %default")
+    optparser.add_option("-l","--lane_file",dest="lane_file",type="string",
+                         help="Path to the file with the lane results information. Default: %default")
+    optparser.add_option('-d',"--demultiplexed_file",dest="demultiplexed_file",type="string",
+                         help="Path to the file with demultiplexed results information. Default: %default")
+    optparser.add_option("--no_attachement",dest="no_attachement",action="store_true",default=False,
+                         help="Set to prevent the attachment from being uploaded. Default: %default")
+    optparser.add_option("--debug",dest="debug",action="store_true",default=False,
+                         help="Set the script to output debug information. Default: %default")
+    optparser.add_option("--real",dest="real",action="store_true",default=False,
+                         help="Set the script to upload the results to the real wiki. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.run_name:
+        logging.error("You must specify a run name.")
+        arg_pass=False
+    if not options.lane_file:
+        logging.error("You must specify a lane file.")
+        arg_pass=False
+    if not options.demultiplexed_file:
+        logging.error("You must specify a demultiplexed file.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()
+    
+
+    

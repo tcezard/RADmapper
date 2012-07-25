@@ -1,0 +1,194 @@
+'''
+Created on 7 Jun 2010
+
+@author: tcezard
+'''
+import os
+import glob
+import logging
+import re
+import utils
+from utils.utils_commands import shellize_file_name
+from wiki_communication import get_wiki_project
+
+"""Check or create the directory structure for each project."""
+
+
+project_id_pattern='((2008|2009|2010){1}\d{3,4})(\D*)'
+sample_id_pattern='(.*)'
+run_id_pattern='(((08|09|10)\d{4})_([1,2,3,4,5,6,7,8]){1}).*'
+
+
+def get_project_dir(project_id):
+    all_projects_dir=['/home/tcezard/projects/']
+    all_valid_project_dir=[]
+    for projects_dir in all_projects_dir: 
+        all_valid_project_dir.extend(glob.glob(os.path.join(projects_dir,project_id+'*')))
+    if len(all_valid_project_dir)==0:
+        valid_project_dir=None
+        logging.error('No project were found for %s'%project_id)
+    elif len(all_valid_project_dir)==1:
+        valid_project_dir=all_valid_project_dir[0]
+    else:
+        valid_project_dir=None
+        logging.error('%s projects were found for %s\n%s'%(len(valid_project_dir),project_id,'/n'.join(valid_project_dir)))
+    return valid_project_dir
+
+def get_sample_dir(project_dir,sample_id):
+    all_valid_sample_dir=glob.glob(os.path.join(project_dir,sample_id+'*'))
+    if len(all_valid_sample_dir)==0:
+        valid_sample_dir=None
+        logging.error('No project were found for %s in %s'%(sample_id,project_dir))
+    elif len(all_valid_sample_dir)==1:
+        valid_sample_dir=all_valid_sample_dir[0]
+    else:
+        valid_sample_dir=None
+        logging.error('%s projects were found for %s in %s'%(len(all_valid_sample_dir),sample_id,project_dir))
+    return valid_sample_dir
+
+def get_run_dir(sample_dir, run_id):
+    all_valid_run_dir=glob.glob(os.path.join(sample_dir,run_id+'*'))
+    if len(all_valid_run_dir)==0:
+        valid_sample_dir=None
+        logging.error('No project were found for %s in %s'%(run_id,sample_dir))
+    elif len(all_valid_run_dir)==1:
+        valid_sample_dir=all_valid_run_dir[0]
+    else:
+        valid_sample_dir=None
+        logging.error('%s projects were found for %s in %s'%(len(all_valid_run_dir),run_id,sample_dir))
+    return valid_sample_dir
+
+
+
+def check_directory_structure(project_id):
+    project_id=str(project_id)
+    project=get_wiki_project(project_id)
+    project_dir=get_project_dir(project_id)
+    if project_dir==None:
+        logging.error("Can't find a directory for project %s"%(project_id))
+    print '%s: %s'%(project_id, project_dir)
+    samples=project.get_samples()
+    for sample in samples:
+        sample_dir=get_sample_dir(project_dir, sample.id)
+        if sample_dir is None:
+            logging.error("Can't find a directory for sample %s"%(sample.id)) 
+            continue
+        run_elements=sample.get_run_elements()
+        for run_element in run_elements:
+            run_dir=get_run_dir(sample_dir, run_element.id)
+            if run_dir is None:
+                logging.error("Can't find a directory for run %s"%(run_element.id)) 
+
+    
+    
+
+def directory_matches(id_pattern, directory_name):
+    dir=os.path.basename(directory_name)
+    match=re.match(id_pattern, dir)
+    if match:
+        id=match.group(1)
+        #complement=match.group(3)
+        return id
+    else:
+        return None
+
+    
+def read_directory_structure(dir):
+    projects_id_to_dir={}
+    non_project_dir=[]
+    non_sample_dir=[]
+    non_run_dir=[]
+    for potential_project_dir in glob.glob(os.path.join(dir,'*')):
+        if os.path.isdir(potential_project_dir):
+            id = directory_matches(project_id_pattern,
+                                 os.path.basename(potential_project_dir))
+            if id:
+                if projects_id_to_dir.has_key(id):
+                    logging.error("project %s can't have more than one directory"%id)
+                    #projects_id_to_dir[id].append((potential_project_dir, {}))
+                else:
+                    projects_id_to_dir[id]=(potential_project_dir, {})
+            else:
+                non_project_dir.append(potential_project_dir)
+    for project_id in projects_id_to_dir.keys():
+        (project_dir, sample_id_to_dir)=projects_id_to_dir.get(project_id)
+        for potential_sample_dir in glob.glob(os.path.join(project_dir,'*')):
+            if os.path.isdir(potential_sample_dir):
+                sample_id = directory_matches(sample_id_pattern,
+                                       os.path.basename(potential_sample_dir))
+                if sample_id:
+                    if sample_id_to_dir.has_key(sample_id):
+                        logging.error("sample %s can't have more than one directory"%sample_id)
+                        #potential_sample_dir[run_id].append(potential_run_dir)
+                    else:
+                        sample_id_to_dir[sample_id]=(potential_sample_dir,{})
+                else:
+                    non_sample_dir.append(potential_sample_dir)
+    for project_id in projects_id_to_dir.keys():
+        (project_dir, sample_id_to_dir)=projects_id_to_dir.get(project_id)
+        for sample_id in sample_id_to_dir.keys():
+            (sample_dir, run_id_to_dir)=sample_id_to_dir.get(sample_id)
+            for potential_run_dir in glob.glob(os.path.join(sample_dir,'*')):
+                if os.path.isdir(potential_run_dir):
+                    run_id = directory_matches(run_id_pattern,
+                                           os.path.basename(potential_run_dir))
+                    if run_id:
+                        if run_id_to_dir.has_key(run_id):
+                            logging.error("run %s can't have more than one directory"%run_id)
+                            #run_id_to_dir[run_id].append(potential_run_dir)
+                        else:
+                            run_id_to_dir[run_id]=potential_run_dir
+                    else:
+                        non_run_dir.append(potential_run_dir)
+    for projects_id in projects_id_to_dir.keys():
+        project_dir, sample_ids_to_dir=projects_id_to_dir.get(projects_id)
+        #print '%s: %s'%(projects_id, project_dir)
+        print '[%s]'%projects_id
+        for sample_id in sample_ids_to_dir.keys():
+            sample_dir, run_ids_to_dir=sample_ids_to_dir.get(sample_id)
+            print 'sample=%s'%sample_id
+            if len(run_ids_to_dir)>0:
+                print 'runs=%s'%'.'.join(run_ids_to_dir.keys())
+                #print '\t%s -- %s: %s'%(sample_id, ' '.join(run_ids_to_dir.keys()), ' '.join(run_ids_to_dir.values()))
+            #else:
+                #print '\t%s: %s'%(sample_id, sample_dir)
+    for dir in non_project_dir:
+        print 'Non project -- %s'%(dir)
+        
+def get_dir_name(all_projects_folder, project_id=None, sample_id=None, run_element_id=None):
+    if project_id:
+        project=get_wiki_project(project_id)
+        project_dir = os.path.join(all_projects_folder,shellize_file_name(project.get_project_page_title()))
+        if sample_id:
+            sample=project.get_sample(sample_id)
+            sample_dir=os.path.join(project_dir, shellize_file_name(sample_id)+'__%s'%(shellize_file_name(sample.get_external_id())))
+            if run_element_id:
+                run_dir=os.path.join(sample_dir,run_element_id)
+            else:
+                run_dir=None
+        else:
+            sample_dir=None
+    else:
+        project_dir=None
+    return project_dir,sample_dir,run_dir
+
+def create_directory_structure(all_projects_folder, project_id=None, sample_id=None, run_element_id=None):
+    project_dir,sample_dir,run_dir = get_dir_name(all_projects_folder, project_id, sample_id, run_element_id)
+    all_dir_to_create=[all_projects_folder]
+    if project_dir:
+        all_dir_to_create.append(project_dir)
+    if sample_dir:
+        all_dir_to_create.append(sample_dir)
+    if run_dir:
+        all_dir_to_create.append(run_dir)
+    
+    utils.createDirectories('',all_dir_to_create)
+    
+    return project_dir,sample_dir,run_dir
+    
+if __name__=="__main__":
+    #potential_project_dir='/home/tcezard/projects/'
+    #read_directory_structure(potential_project_dir)
+    check_directory_structure(2010009)
+    #check_directory_structure(2009108)
+    

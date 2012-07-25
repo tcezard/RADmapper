@@ -1,0 +1,286 @@
+'''
+Created on 28 Jun 2010
+
+@author: tcezard
+'''
+import logging
+import os
+import command_runner
+import run_BWA_commands
+import glob
+from get_data_from_seqarchive import get_data_from_seqarchive, sol_fastq_2_sang_fastq
+from optparse import OptionParser
+import utils
+from utils import utils_logging, utils_commands,utils_param
+import sys
+from wiki_communication import get_wiki_project
+from pipeline_directory_structure import create_directory_structure
+from run_BWA_commands import check_genome_index, ANALYSIS_DIGITAL_TRANSC
+from utils.Binning import load_distribution
+
+
+
+def process_digital_transcriptomic(all_projects_folder, project_id, sample_id, run_elemt_id, genome_file,
+                                   overwrite, print_out):
+    if not print_out:
+        command_runner.set_command_to_run_localy()
+    #create directory for the main project folders
+    project_dir,sample_dir,run_dir=create_directory_structure(all_projects_folder, project_id, sample_id, run_elemt_id)
+    log_file_name=os.path.join(run_dir,'%s_process_digital_transcriptomic.log'%run_elemt_id)
+    utils_logging.init_logging(output_level=None, log_file_name=log_file_name, overwrite=overwrite)
+    logging.info('Retrieve the data from seqarchive')
+    solexa_fastq = get_data_from_seqarchive(all_projects_folder, project_id, sample_id, run_elemt_id, overwrite, sanger_fastq=False)
+    
+    all_fastq=glob.glob(os.path.join(all_projects_folder,project_id+'*','*',
+                                     run_elemt_id+'*',run_elemt_id+'.solfastq.gz'))
+    if print_out:
+        run_elemnt_dir = glob.glob(os.path.join(all_projects_folder,project_id+'*','*',run_elemt_id+'*'))[0]
+        all_fastq=[os.path.join(run_elemnt_dir,run_elemt_id+'.solfastq.gz')]
+        
+    if len(all_fastq)>1:
+        logging.error('More than 1 fastq file was found: %s'%(', '.join(all_fastq)))
+    elif len(all_fastq)==0:
+        logging.error('No fastq file was found in %s for project %s, sample %s run %s'%(all_projects_folder,
+                                                                                        project_id,sample_id,run_elemt_id))
+    else:
+        name, dummy=os.path.splitext(os.path.basename(all_fastq[0]))
+        aligned_bam=os.path.join(os.path.dirname(all_fastq[0]),'bwa', name+'_sorted.bam')
+        run_fine=create_tag_and_align(all_fastq[0], genome_file, overwrite, sample_id, run_elemt_id)
+        if run_fine:
+            command='rm -f %s'%all_fastq[0]
+            command_runner.run_command(command)
+    
+                             
+    
+def create_tag_and_align_to_be_corrected(solexa_fastq_file, genome_file, overwrite, sample_id, run_elemt_id):
+    run_fine=True
+    logging.info('Process digital transcriptomic sample')
+    base,ext=os.path.splitext(solexa_fastq_file)
+    cat_command='cat'
+    if ext=='.gz':
+        base,ext=os.path.splitext(base)
+        cat_command='zcat'
+    tag_sanger_fastq_file=base+'_tag.fastq'
+    adapter_sequence = 'TCGTATGCCGTCTTCTGCTTG'
+    pipeline_param=utils_param.get_pipeline_parameters()
+    fastx_dir= pipeline_param.get_fastqx_dir()
+    fastx_clipper_bin = os.path.join(fastx_dir,'fastx_clipper')
+    if not os.path.exists(tag_sanger_fastq_file) or overwrite:
+        
+        logging.info('Trim the read by removing the adapter')
+        adapter_trimmed_solexa_fastq_file=base+'_adapter_trimmed.solfastq'
+        command = "%s %s | %s -a %s > %s"%(cat_command,solexa_fastq_file, fastx_clipper_bin,
+                                              adapter_sequence, adapter_trimmed_solexa_fastq_file)
+        return_code = command_runner.run_command(command)
+        if return_code!=0:
+            run_fine=False
+        logging.info('Get read length distribution')
+        awk_command = """awk '{if (NR%4==2){print length($1)}}'"""
+        command = "cat %s| %s "%(adapter_trimmed_solexa_fastq_file,awk_command)
+        output_stream, process = utils_commands.get_output_stream_from_command(command)
+        dist = load_distribution(output_stream)
+        dist_file = base+'_read_length.dist'
+        dist.print_dist(dist_file)
+        logging.info(dist.print_dist())
+        
+        logging.info('Trim the read and add NlaIII tag')
+        tag_solexa_fastq_file=base+'_tag.solfastq'
+        awk_command="""awk '{if (NR%4==1){fastq_head=$0}; if (NR%4==2){fastq_seq=$0}; if (NR%4==3){fastq_head2=$0}; if (NR%4==0){if (length(fastq_seq)>16 && length(fastq_seq)<18){printf "%s\\nCATG%s\\n%s\\nhhhh%s\\n",fastq_head,fastq_seq,fastq_head2,$0}}}'"""
+        command = "cat %s | %s > %s"%(adapter_trimmed_solexa_fastq_file, awk_command, tag_solexa_fastq_file)
+        return_code = command_runner.run_command(command)
+        if return_code!=0:
+            run_fine=False
+        return_code = sol_fastq_2_sang_fastq(tag_solexa_fastq_file, tag_sanger_fastq_file, overwrite=True)
+        if return_code!=0:
+            run_fine=False
+        if run_fine:
+            command = 'rm -f %s'%(' '.join([adapter_trimmed_solexa_fastq_file,tag_solexa_fastq_file]))
+            return_code = command_runner.run_command(command)
+            if return_code!=0:
+                run_fine=False
+            
+    if run_fine:
+        read_group_element=[]
+        read_group_element.append("@RG")
+        read_group_element.append("ID:%s"%run_elemt_id)
+        read_group_element.append("CN:The Genepool")
+        read_group_element.append("LB:%s"%sample_id)
+        read_group_element.append("PL:ILLUMINA")
+        read_group_element.append("PU:%s"%run_elemt_id)
+        read_group_element.append("SM:%s"%sample_id)
+        read_group= '%s'%('\\t'.join(read_group_element))
+        sample_name,ext=os.path.splitext(os.path.basename(tag_sanger_fastq_file))
+        aligned_bam=os.path.join(os.path.dirname(tag_sanger_fastq_file),'bwa', sample_name+'_sorted.bam')
+        if not os.path.exists(aligned_bam) or overwrite:
+            logging.info('Align the tag to genome')
+            output_dir=os.path.join(os.path.dirname(tag_sanger_fastq_file),'bwa')
+            utils.createDirectories('', [output_dir])
+            if not run_BWA_commands.run_BWA_Command(genome_file, fastq_file1=tag_sanger_fastq_file, output_dir=output_dir,
+                             sample_name=sample_name, clean_up=True, sort=True,thread=4, analysis_type=ANALYSIS_DIGITAL_TRANSC, read_group=read_group):
+                run_fine=False
+    if run_fine:
+        command = 'rm -f %s'%(tag_sanger_fastq_file)
+        return_code = command_runner.run_command(command)
+        if return_code!=0:
+            run_fine=False
+    return run_fine
+
+def create_tag_and_align(solexa_fastq_file, genome_file, overwrite, sample_id, run_elemt_id):
+    run_fine=True
+    logging.info('Process digital transcriptomic sample')
+    base,ext=os.path.splitext(solexa_fastq_file)
+    cat_command='cat'
+    if ext=='.gz':
+        base,ext=os.path.splitext(base)
+        cat_command='zcat'
+    tag_sanger_fastq_file=base+'_tag.fastq'
+    adapter_sequence = 'TCGTATGCCGTCTTCTGCTTG'
+    pipeline_param=utils_param.get_pipeline_parameters()
+    fastx_dir= pipeline_param.get_fastqx_dir()
+    fastx_clipper_bin = os.path.join(fastx_dir,'fastx_clipper')
+    if not os.path.exists(tag_sanger_fastq_file) or overwrite:
+        
+        logging.info('Trim the read by removing the adapter')
+        awk_command = """awk '{if (NR%4==2){print "CATG"substr($0,1,17)}else{if (NR%4==0){print "hhhh"substr($0,1,17)}else{print} } }'"""
+        tag_solexa_fastq_file=base+'_tag.solfastq'
+        command = "%s %s | %s > %s"%(cat_command,solexa_fastq_file, awk_command, tag_solexa_fastq_file)
+        return_code = command_runner.run_command(command)
+        if return_code!=0:
+            run_fine=False
+            
+        return_code = sol_fastq_2_sang_fastq(tag_solexa_fastq_file, tag_sanger_fastq_file, overwrite=True)
+        if return_code!=0:
+            run_fine=False
+            
+        if run_fine:
+            command = 'rm -f %s'%(' '.join([tag_solexa_fastq_file]))
+            return_code = command_runner.run_command(command)
+            if return_code!=0:
+                run_fine=False
+            
+    if run_fine:
+        read_group_element=[]
+        read_group_element.append("@RG")
+        read_group_element.append("ID:%s"%run_elemt_id)
+        read_group_element.append("CN:The Genepool")
+        read_group_element.append("LB:%s"%sample_id)
+        read_group_element.append("PL:ILLUMINA")
+        read_group_element.append("PU:%s"%run_elemt_id)
+        read_group_element.append("SM:%s"%sample_id)
+        read_group= '%s'%('\\t'.join(read_group_element))
+        sample_name,ext=os.path.splitext(os.path.basename(tag_sanger_fastq_file))
+        aligned_bam=os.path.join(os.path.dirname(tag_sanger_fastq_file),'bwa', sample_name+'_sorted.bam')
+        if not os.path.exists(aligned_bam) or overwrite:
+            logging.info('Align the tag to genome')
+            output_dir=os.path.join(os.path.dirname(tag_sanger_fastq_file),'bwa')
+            utils.createDirectories('', [output_dir])
+            if not run_BWA_commands.run_BWA_Command(genome_file, fastq_file1=tag_sanger_fastq_file, output_dir=output_dir,
+                             sample_name=sample_name, clean_up=True, sort=True,thread=4, analysis_type=ANALYSIS_DIGITAL_TRANSC, read_group=read_group):
+                run_fine=False
+    if run_fine:
+        command = 'rm -f %s'%(tag_sanger_fastq_file)
+        return_code = command_runner.run_command(command)
+        if return_code!=0:
+            run_fine=False
+    return run_fine
+            
+    
+    
+def process_all_digital_transcriptomic(project_id, genome_file, overwrite):
+    project=get_wiki_project(project_id)
+    samples=project.get_samples()
+    process_path=sys.argv[0]
+    for sample in samples:
+        run_elements = sample.get_run_elements()
+        if run_elements is not None:
+            for run_element in sample.get_run_elements():
+                command='python %s -p "%s" -s "%s" -r "%s" -g %s '%(process_path,project_id, sample.id, run_element.id, genome_file)
+                if overwrite:
+                    command+=' --force'
+                command_runner.run_command(command)
+    
+        
+    
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    
+    if options.projects_dir is None:
+        pipeline_places = utils_param.get_pipeline_places()
+        all_projects_folder = pipeline_places.get_illumina_project_dir()
+    else:
+        all_projects_folder=options.projects_dir
+        
+    if not check_genome_index(options.genome_file):
+        sys.exit(1)
+    
+    if options.sample_id is not None and options.run_element_id is not None:
+        
+        process_digital_transcriptomic(all_projects_folder, options.project_id, options.sample_id,
+                                       options.run_element_id, options.genome_file, overwrite=options.force,
+                                       print_out=options.print_out)
+    else:
+        process_all_digital_transcriptomic(options.project_id, options.genome_file, overwrite=options.force)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-p project_id> [-s sample_id -r run_element_id]"""
+    description = """This Script create or execute commands that will process NlaIII tagged samples.
+    The process include finding the raw fastq file in solexa format convert them into sanger fastq format,
+    trim off the end of the read to keep only 17 bases, add the other half of the NlaIII tag,
+    align the tagged reads to the provided genome.
+    """
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-p","--project_id",dest="project_id",type="string",
+                         help="The project id to analyse.")
+    optparser.add_option("-g","--genome_file",dest="genome_file",type="string",
+                         help="The genome file used for that analysis.")
+    optparser.add_option("-s","--sample_id",dest="sample_id",type="string",
+                         help="The sample to analyse.")
+    optparser.add_option("-r","--run_element_id",dest="run_element_id",type="string",
+                         help="The run element id to analyse.")
+    optparser.add_option("-P","--projects_dir",dest="projects_dir",type="string",
+                         help="Change the project dir from the default ~/projects.")
+    optparser.add_option("--force",dest="force",action='store_true', default=False,
+                         help="Force the process to happen by overwriting any existing files.")
+    optparser.add_option("--print",dest="print_out",action='store_true', default=False,
+                         help="Set the script to only print the commands instead of running them.")
+    
+    
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.project_id:
+        logging.error("You must specify an project id with -p.")
+        arg_pass=False
+    if not options.genome_file:
+        logging.error("You must specify an genome file with -g.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

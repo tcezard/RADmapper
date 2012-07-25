@@ -1,0 +1,270 @@
+#!/usr/bin/env python
+import sys, logging
+from optparse import OptionParser
+import utils
+from utils import getWtss_version, utils_logging
+from SNPs import get_nt_array_from_IUPAC
+from annotate_snv import read_line_snv_std
+
+
+def merge_split_known_novel_snp(snps_file, knonw_snps_file):
+    open_snps=utils_logging.open_input_file(snps_file)
+    for line in open_snps:
+        snv_info=read_line_snv_std(line)
+        if snv_info:
+            (chr,coordinate,ref_base, snv_bases,other)=snv_info
+            
+
+
+def split_snps_file(input_file, output_file_known, output_file_novel):
+    count_known=0
+    output_known=open(output_file_known,'w')
+    count_novel=0
+    output_novel=open(output_file_novel,'w')
+    
+    # read the first lines to figure out the format
+    open_file=open(input_file)
+    line=open_file.readline()
+    finished=False
+    column_sizes={}
+    keep_line=''
+    while line and not finished:
+        keep_line=line
+        nb_column=len(line.split())
+        column_sizes[nb_column]=1
+        if len(column_sizes)>1:
+            finished=True
+        line=open_file.readline()
+    open_file.close()
+    
+    if finished:
+        max_column=max(column_sizes.keys())
+        min_column=min(column_sizes.keys())
+        if max_column-min_column!=2:
+            logging.error("format error: unrecognize format")
+            return
+    else:
+        logging.warning("Only one type of event")
+        #All the lines have the same number of column 
+        #We don't know if they're all known or all novel
+        nb_column=column_sizes.keys()[0]
+        sp_line=keep_line.split()
+        if len(sp_line[-1].split('/'))==len(sp_line[-2].split('/')) and _are_valid_bases(sp_line[-2]):
+            max_column=nb_column
+            min_column=nb_column-2
+            logging.warning("All snvs are known")
+        else:
+            max_column=nb_column-2
+            min_column=nb_column
+            logging.warning("All snvs are novel")
+    
+    open_file=open(input_file)
+    line=open_file.readline()
+    while line:
+        sp_line=line.split()
+        if len(sp_line)==max_column and len(sp_line[-1].split('/'))==len(sp_line[-2].split('/')):
+            #possibly known snps
+            #actual_snps=parse_out_snps_from_rmorin(sp_line)
+            actual_snps=parse_out_snps_from_snvmix2(sp_line)
+            bases_seen_before=get_known_snps(sp_line[-2])
+            if actual_snps in bases_seen_before:
+                #known snps
+                novel=False
+            else:
+                #novel snp
+                novel=True
+        else:
+            #novel snp
+            novel=True
+            sp_line.append('-')
+            sp_line.append('-')
+            
+        if novel:
+            output_novel.write('\t'.join(sp_line)+'\n')
+            count_novel+=1
+        else:
+            output_known.write('\t'.join(sp_line)+'\n')
+            count_known+=1
+        line=open_file.readline()
+    output_known.close()
+    output_novel.close()
+    open_file.close()
+    logging.info('%s snps split into %s novel and %s known'%(count_novel+count_known,count_novel,count_known))
+
+
+def assess_known_novel_snps(input_file, output_file):
+    count_known=0
+    count_novel=0
+    open_output=open(output_file,'w')
+    
+    # read the first lines to figure out the format
+    open_file=open(input_file)
+    line=open_file.readline()
+    finished=False
+    column_sizes={}
+    while line and not finished:
+        nb_column=len(line.split())
+        column_sizes[nb_column]=1
+        if len(column_sizes)>1:
+            finished=True
+        line=open_file.readline()
+    open_file.close()
+    open_file=open(input_file)
+    line=open_file.readline()
+    if finished:
+        max_column=max(column_sizes.keys())
+        min_column=min(column_sizes.keys())
+        if max_column-min_column!=2:
+            logging.error("format error: unrecognize format")
+            return
+    else:
+        logging.error("format error: unrecognize format")
+        return
+    
+    while line:
+        sp_line=line.split()
+        if len(sp_line)==max_column and len(sp_line[-1].split('/'))==len(sp_line[-2].split('/')):
+            #possibly known snps
+            #actual_snps=parse_out_snps_from_rmorin(sp_line)
+            actual_snps=parse_out_snps_from_snvmix2(sp_line)
+            bases_seen_before=get_known_snps(sp_line[-2])
+            if actual_snps in bases_seen_before:
+                #known snps
+                novel=False
+            else:
+                #novel snp
+                novel=True
+        else:
+            #novel snp
+            novel=True
+            sp_line.append('-')
+            sp_line.append('-')
+            
+        if novel:
+            sp_line.append('novel')
+            count_novel+=1
+        else:
+            sp_line.append('known')
+            count_known+=1
+        open_output.write('\t'.join(sp_line)+'\n')
+        line=open_file.readline()
+    open_output.close()
+    open_file.close()
+    logging.info('%s snps with %s novel and %s known'%(count_novel+count_known,count_novel,count_known))
+
+
+def get_known_snps(known_snps_str):
+    known_snps=known_snps_str.split('/')
+    bases_seen_before={}
+    for known_snp in known_snps:
+        snps=known_snp.split(':')
+        for snp in snps:
+            bases=get_nt_array_from_IUPAC(snp)
+            for base in bases:
+                bases_seen_before[base]=1
+    return bases_seen_before.keys()
+
+def _are_valid_bases(known_snps_str):
+    known_snps=known_snps_str.split('/')
+    valid=True
+    for known_snp in known_snps:
+        snps=known_snp.split(':')
+        for snp in snps:
+            bases=get_nt_array_from_IUPAC(snp)
+            if not bases:
+                valid=False
+    return valid
+    
+def parse_out_snps_from_rmorin(sp_line):
+    """This will return The snp base from The coverage info in Rmorin snps output format
+    It looks at the reference base 2 columns before the coverage info to find the ref base at that location."""
+    #chr10:105164859 G R 11,A,6,G,E:11,J:,17, CCA P P SYNONYMOUS CONSERVATIVE CONSERVATIVE 0 A dbSNP_129
+    #chr10:105184076 C Y 13,T,10,C,E:12,J:1,23, TTC L F CODING CONSERVATIVE RADICAL 22 T/T watson/dbSNP_129
+    index_comma_separated_list=0
+    # get the first comma separated list
+    for i in range(len(sp_line)):
+        if len(sp_line[i].split(','))>1:
+            index_comma_separated_list=i
+            break
+    ref_base=sp_line[index_comma_separated_list-2]
+    snp_line=sp_line[index_comma_separated_list]
+    #C       Y       33,C,25,T,E:25,J:,58,
+    infos=snp_line.split(',')
+    if infos[1]!=ref_base:
+        return infos[1]
+    else :
+        return infos[3]
+
+
+def parse_out_snps_from_snvmix2(sp_line):
+    """This will return The snp base from snvmix snps output format."""
+    #LG_I:13319      639579  -       TAC     3       G       A       G:34,A:43,0.0000000000,1.0000000000,0.0000000000,2      639579  3       cds     -       -       -       -
+    index_comma_separated_list=0
+    # get the first comma separated list
+    for i in range(len(sp_line)):
+        if len(sp_line[i].split(','))>1:
+            index_comma_separated_list=i
+            break
+    ref_base=sp_line[index_comma_separated_list-2]
+    snp_base=sp_line[index_comma_separated_list-1]
+    return snp_base
+    
+    
+def main():
+    #initialize the logging
+    utils_logging.init_logging()
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    split_snps_file(options.input_file, options.output_file_known, options.output_file_novel)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script take a snps file generated by Ryan Morin's script and annotated with known snps information.
+    It splits the entries into know and novel snps"""
+    
+    prog_version=getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-i","--input",dest="input_file",type="string",
+                         help="Path to a file where the input data are located. Default: %default")
+    optparser.add_option("-n","--novel_output",dest="output_file_novel",type="string",
+                         help="Path to a file where the novel snps will be output. Default: %default")
+    optparser.add_option("-k","--known_output",dest="output_file_known",type="string",
+                         help="Path to a file where the known snps will be output. Default: %default")
+    
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    # Test output_file
+    if not options.output_file_novel:
+        logging.error("You must specify an output file.")
+        arg_pass=False
+    if not options.output_file_known:
+        logging.error("You must specify an output file.")
+        arg_pass=False
+    if not options.input_file:
+        logging.error("You must specify an input file.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

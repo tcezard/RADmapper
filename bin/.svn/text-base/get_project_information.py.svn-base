@@ -1,0 +1,143 @@
+# -*- coding: utf-8 -*-
+'''
+Created on 25 June 2012
+
+@author: tcezard
+'''
+import logging
+
+import sys, re
+from optparse import OptionParser
+from wiki_communication import get_wiki_project
+from utils import utils_logging, utils_param
+from wiki_communication.wiki_pages_utils import get_all_project_page_title
+from wiki_communication.project_page_parser import get_project_id_from_page_title
+import codecs
+PROJECT_NOT_FOUND=2
+NO_SAMPLE_FOUND=4
+NO_BARCODED_SAMPLE_FOUND=8
+NO_POOL_FOUND=16
+
+
+
+def get_project_information(project_list, output_file):
+    open_output_file = codecs.open(output_file, encoding="utf-8", mode="w")
+    return_code=0
+    for project_id in set(project_list):
+        project = get_wiki_project(project_id)
+        out=[]
+        if project:
+            out=[project.id]
+            out.append(project.get_project_page_title())
+            samples = project.get_samples()
+            libraries = project.get_libraries()
+            pools = project.get_pools()
+            all_samples_id=[]
+            for sample in samples:
+                all_samples_id.append(sample.id)
+            out.append(",".join(all_samples_id))
+            all_libraries=[]
+            if libraries:
+                libraries.sort(cmp=compare_libraries)
+                for library in libraries:
+                    all_libraries.append("%s:%s:%s"%(library.id,library.sample.id,library.index_id))
+            out.append(",".join(all_libraries))
+            all_pools=[]
+            if pools:
+                pools.sort(cmp=compare_pools)
+                for pool in pools:
+                    lib_list=[]
+                    library_list = pool.get_library_list()
+                    library_list.sort(cmp=compare_libraries)
+                    for lib in library_list:
+                        lib_list.append(lib.id)
+                    all_pools.append("%s:%s"%(pool.id,":".join(lib_list)))
+            
+            out.append(",".join(all_pools))
+        else:
+            out.append("")                #project id 
+            out.append("")                #samples 
+            out.append("")                #library 
+            out.append("")                #pools 
+            return_code=PROJECT_NOT_FOUND
+        out.append(str(return_code))
+        open_output_file.write("\t".join(out)+"\n")
+    open_output_file.close()
+
+def compare_libraries(lib1,lib2):
+    return int(lib1.id)-int(lib2.id)
+
+def compare_pools(pool1,pool2):
+    match = re.match("\D+(\d+).*",pool1.id)
+    if match: 
+        m1 = int(match.group(1))
+    else:
+        m1 = 0
+    match = re.match("\D+(\d+).*",pool2.id)
+    if match: 
+        m2 = int(match.group(1))
+    else:
+        m2 = 0
+    return m1-m2
+      
+def get_all_project_names(output_file):
+    open_output = codecs.open(output_file, encoding='utf-8', mode='w')
+    
+    all_project_titles = get_all_project_page_title()
+    for project_title in all_project_titles:
+        
+        project_id = get_project_id_from_page_title(project_title)
+        if project_id:
+            open_output.write("%s\t%s\n"%(project_id,project_title))
+    open_output.close()
+    
+def main():
+    #initialise the logging
+    utils_logging.init_logging(logging.DEBUG)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,dummy) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    if options.all_projects:
+        get_all_project_names(options.output_file)
+    else:
+        project_list=options.project_list.split(',')
+        get_project_information(project_list, options.output_file)
+    
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog """
+    description = """"""
+    
+    prog_version='0'
+    optparser = OptionParser(description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-p", "--project_list", dest="project_list", type="string",
+                         help="Comma separated list of project. Default: %default")
+    optparser.add_option("-a", "--all_projects", dest="all_projects", action="store_true", default=False,
+                         help="Set the script to output all projects is and name. Default: %default")
+    optparser.add_option("-o", "--output_file", dest="output_file", type="string",
+                         help="The output file containing the results. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    if (not options.project_list or len(options.project_list.split(','))<1)  and not options.all_projects:
+        logging.error("You need to enter one or several project id with -p or use -a for all projects")
+    arg_pass = arg_pass and utils_param.check_output_file(options.output_file, pipe_allowed=False)
+    
+    return arg_pass
+
+if __name__=='__main__':
+    main()

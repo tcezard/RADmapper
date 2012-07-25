@@ -1,0 +1,156 @@
+'''
+Created on 21 Jan 2010
+
+@author: tcezard
+'''
+#!/usr/bin/env python
+import  sys, logging
+from SNPs import cplx_atgc2iupac
+from optparse import OptionParser
+from utils import utils_logging
+from IO_interface.vcfIO import VcfReader, VcfRecord
+
+def load_vcf_file(vcf_file):
+    file_handle = utils_logging.open_input_file(vcf_file, pipe=False)
+    vcf_reader  = VcfReader(file_handle)
+    all_vcf_record_per_refpos={}
+    for line in vcf_reader:
+        vcf_record = VcfRecord(line,vcf_reader.get_sample_names())
+        if vcf_record.is_indel():
+            logging.warning("Indel at %s:%s is not supported"%(vcf_record.get_reference(),vcf_record.get_position()))
+        all_vcf_record_per_refpos['%s:%s'%(vcf_record.get_reference(),vcf_record.get_position())]=vcf_record
+    file_handle.close()
+    logging.info('Read %s variant positions'%len(all_vcf_record_per_refpos))
+    return all_vcf_record_per_refpos
+    
+def get_iupac_from_genotype_and_bases(genotypes, ref_base, alt_bases):
+    all_bases=[ref_base]
+    all_bases.extend(alt_bases)
+    genotype_bases=[]
+    for genotype in genotypes:
+        genotype_bases.append(all_bases[int(genotype)])
+    new_base=cplx_atgc2iupac(genotype_bases)
+    return new_base
+    
+
+def generate_consensus_from_fasta(vcf_file, fasta_file, output_fasta_file, sample_names,
+                                  merge=False, genotype_quality=20):
+    #load vcf files
+    all_vcf_record_per_refpos = load_vcf_file(vcf_file)
+    open_fasta = utils_logging.open_input_file(fasta_file, pipe=False)
+    output_fasta = utils_logging.open_output_file(output_fasta_file, pipe=False)
+    if sample_names:
+        sample_names_array = sample_names.split(',')
+    else:
+        sample_names_array=None
+    curr_reference=''
+    position=0
+    for line in open_fasta:
+        line = line.strip()
+        if line.startswith('>'):
+            curr_reference=line[1:].split()[0]
+            position=0
+            output_fasta.write(line+'\n')
+            logging.info(curr_reference)
+        else:
+            for char in line.strip():
+                position+=1
+                position_key='%s:%s'%(curr_reference, position)
+                if all_vcf_record_per_refpos.has_key(position_key):
+                    vcf_record = all_vcf_record_per_refpos.get(position_key)
+                    if vcf_record.get_reference_base() == char.upper():
+                        alt_bases = vcf_record.get_alt_bases()
+                        genotypes_per_sample=vcf_record.get_valid_genotype_per_sample(genotype_quality_threshold=genotype_quality, sample_list=sample_names_array)
+                        if len(genotypes_per_sample)==0:
+                            logging.debug("No valid genotypes for position %s use ref base %s"%(position_key,char))
+                            output_fasta.write(char)
+                            continue
+                        if len(genotypes_per_sample)==1:
+                            new_base = get_iupac_from_genotype_and_bases(genotypes_per_sample.keys()[0].split('/'),char, alt_bases)
+                            output_fasta.write(new_base)
+                        else:
+                            if merge:
+                                all_genotypes=[]
+                                for genotypes in genotypes_per_sample.keys():
+                                    all_genotypes.extend(genotypes.split('/'))
+                                new_base = get_iupac_from_genotype_and_bases(all_genotypes,char, alt_bases)
+                                output_fasta.write(new_base)
+                            else:
+                                all_keys=genotypes_per_sample.keys()
+                                err_msg=[]
+                                for key in all_keys:
+                                    samples = genotypes_per_sample.get(key)
+                                    err_msg.append('samples %s say %s'%(', '.join(samples), key))
+                                logging.warning("can't use the genotype for position %s %s"%(position_key, ' and '.join(err_msg)))
+                                output_fasta.write(char)
+                    else:
+                        logging.error("%s reference bases in fasta file (%s) and in vcf file (%s) don't match"%(position_key, char, vcf_record.get_reference_base()))
+                else:
+                    output_fasta.write(char)
+            output_fasta.write('\n')
+    output_fasta.close()
+    open_fasta.close()
+
+def main():
+    #initialise the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,dummy) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    generate_consensus_from_fasta(options.vcf_file, options.fasta_file, options.output_fasta_file, options.samples,
+                                  options.merge_genotype, options.genotype_quality)
+    
+        
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog """
+    description = """"""
+    
+    prog_version='0'
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-v","--vcf",dest="vcf_file",type="string",
+                         help="Path to a vcf file that contains the variation. Default: %default")
+    optparser.add_option("-f","--fasta",dest="fasta_file",type="string",
+                         help="Path to a fasta file that contains the reference to modify. Default: %default")
+    optparser.add_option("-o","--output",dest="output_fasta_file",type="string",
+                         help="Path to a file where the results will be output. Default: %default")
+    optparser.add_option("-s","--samples",dest="samples",type="string",
+                         help="Comma separated list of sample names that should be used. Default: %default")
+    optparser.add_option("-m","--merge_genotype",dest="merge_genotype",action="store_true", default=False, 
+                         help="This flag set the script to use all the bases found in the genotype whatever the sample they come from. Default: %default")
+    optparser.add_option("-q","--genotype_quality",dest="genotype_quality",type="int",default=20,
+                         help="use only the genotypes that have a quality greater than this threshold. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    # Test output_file
+    if not options.vcf_file:
+        logging.error("You must specify a vcf file.")
+        arg_pass=False
+    if not options.fasta_file:
+        logging.error("You must specify a fasta file.")
+        arg_pass=False
+    if not options.output_fasta_file:
+        logging.error("You must specify an output file.")
+        arg_pass=False
+    return arg_pass
+
+
+if __name__=="__main__":
+    main()

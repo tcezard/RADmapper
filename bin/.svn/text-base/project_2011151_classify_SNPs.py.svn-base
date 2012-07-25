@@ -1,0 +1,240 @@
+# -*- coding: utf-8 -*-
+'''
+Created on 10 May 2012
+@author: tcezard
+'''
+import sys, os
+from IO_interface import vcfIO
+from utils import utils_logging
+
+
+def get_all_samples_geno(input_vcf_file,input_vcf_file2):
+    """Get the snps present in """
+    
+    
+    all_records={}
+    
+    open_input = open(os.path.abspath(input_vcf_file2))
+    reader = vcfIO.VcfReader(open_input)
+    for record in reader:
+        all_records['%s:%s'%(record.get_reference(),record.get_position())]=record
+        
+    open_input = open(os.path.abspath(input_vcf_file))
+    reader = vcfIO.VcfReader(open_input)
+    sample_names = reader.get_sample_names()
+    sample_group=sample_names
+    header=['reference', 'position','snp_qual_dup','snp_qual_nodup','nb_geno_0.0','nb_geno_0.1','nb_geno_1.1','most_likely_geno']
+    for sample in sample_group:
+        header.append('%s_dup_GT'%sample)
+        header.append('%s_nodup_GT'%sample)
+        header.append('%s_dup_GQ'%sample)
+        header.append('%s_nodup_GQ'%sample)
+        header.append('%s_GT_change'%sample)
+        header.append('%s_change_type'%sample)
+        header.append('%s_equal_most_likely'%sample)
+    print '\t'.join(header)
+    for record in reader:
+        other_record=all_records.get('%s:%s'%(record.get_reference(),record.get_position()))
+        if other_record is None:
+            print 'ERROR: cannot find %s:%s in %s'%(record.get_reference(),record.get_position(), input_vcf_file2)
+            continue 
+        out=[]
+        out.append(record.get_reference())
+        out.append(str(record.get_position()))
+        out.append(str(record.get_qual()))
+        out.append(str(other_record.get_qual()))
+        all_geno={'0/0':0,'0/1':0,'1/1':0}
+        for sample in sample_group:
+            try:
+                geno1=str(record.get_genotype(sample=sample))
+            except vcfIO.NoSuchTagException:
+                geno1='0/0'
+            
+            try:
+                geno2=str(other_record.get_genotype(sample=sample))
+            except vcfIO.NoSuchTagException:
+                geno2='0/0'
+            all_geno[geno1]+=1
+            all_geno[geno2]+=1
+        out.append(str(all_geno.get('0/0')))
+        out.append(str(all_geno.get('0/1')))
+        out.append(str(all_geno.get('1/1')))
+        max_val = max(all_geno.get('0/0'),all_geno.get('0/1'),all_geno.get('1/1'))
+        if all_geno.get('0/0')==max_val:
+            most_likely_geno='0/0'
+        elif all_geno.get('0/1')==max_val:
+            most_likely_geno='0/1'
+        elif all_geno.get('1/1')==max_val:
+            most_likely_geno='1/1'
+        out.append(most_likely_geno)
+        
+        for sample in sample_group:
+            try:
+                geno1=str(record.get_genotype(sample=sample))
+                geno_qual1=str(record.get_genotype_quality(sample=sample))
+            except vcfIO.NoSuchTagException:
+                geno1='0/0'
+                geno_qual1='0'
+            try:
+                geno2=str(other_record.get_genotype(sample=sample))
+                geno_qual2=str(other_record.get_genotype_quality(sample=sample))
+            except vcfIO.NoSuchTagException:
+                geno2='0/0'
+                geno_qual2='0'
+            out.append(geno1)
+            out.append(geno2)
+            out.append(geno_qual1)
+            out.append(geno_qual2)
+            out.append('%s->%s'%(geno1,geno2))
+            if geno1 == geno2:
+                out.append('same_genotype')
+            else:
+                out.append('different_genotype')
+            if geno1 == most_likely_geno and geno2 == most_likely_geno:
+                out.append('both')
+            elif geno1 == most_likely_geno:
+                out.append('dup')
+            elif geno2 == most_likely_geno:
+                out.append('no_dup')
+            else:
+                out.append('none')
+        print '\t'.join(out)
+        
+    open_input.close()
+    
+#    out.append('%s\t%s'%(record.get_reference(),record.get_position()))
+#    
+#    if all_geno.get('0/0')>=len(sample_group)-1:
+#        out.append('ref-ref')
+#    elif all_geno.get('0/1')>=len(sample_group)-1:
+#        out.append('ref-alt')
+#    elif all_geno.get('1/1')>=len(sample_group)-1:
+#        out.append('alt-alt')
+#    else:
+#        out.append('unknown')
+#    out.append(str(all_geno.get('0/0')))
+#    out.append(str(all_geno.get('0/1')))
+#    out.append(str(all_geno.get('1/1')))
+#    
+#    sum=0
+#    all_genotypes_and_depth=[]
+#    for sample in sample_group:
+#        all_genotypes_and_depth.append(str(record.get_genotype_quality(sample=sample)))
+#        all_genotypes_and_depth.append(str(record.get_sample_depth(sample=sample)))
+#        sum+=record.get_genotype_quality(sample=sample)
+#    out.append('%s'%(sum/len(sample_names)))
+#    out.append(str(record.get_qual()))
+#    out.append(record.get_info_tag_value(info_flag='DP'))
+#    out.extend(all_genotypes_and_depth)
+
+def get_single_sample_genotypes(input_with_dup_vcf_file, input_no_dup_vcf_file, sample):
+    all_records={}
+    
+    open_input = open(os.path.abspath(input_no_dup_vcf_file))
+    reader = vcfIO.VcfReader(open_input)
+    
+    for record in reader:
+        try:
+            geno1=str(record.get_genotype(sample=sample))
+        except vcfIO.NoSuchTagException:
+            geno1='./.'
+        if not geno1 is None or geno1 !='./.':
+            all_records['%s:%s'%(record.get_reference(),record.get_position())]=record
+        
+    open_input = open(os.path.abspath(input_with_dup_vcf_file))
+    reader = vcfIO.VcfReader(open_input)
+    sample_names = reader.get_sample_names()
+    sample_group=sample_names
+    header=['reference', 'position','snp_qual_dup','snp_qual_nodup','%s_dup_genotype'%sample, '%s_nodup_genotype'%sample, 
+            '%s_dup_genotype_quality'%sample, '%s_nodup_genotype_quality'%sample,'%s_dup_depth'%sample, '%s_nodup_depth'%sample, 
+            'status', 'change']
+    print '\t'.join(header)
+    for record in reader:
+        other_record=all_records.get('%s:%s'%(record.get_reference(),record.get_position()))
+        if other_record is None:
+            geno2='./.'
+            geno_qual2='0'
+            depth2='0'
+            other_qual='0'
+        else:
+            try:
+                geno2=str(other_record.get_genotype(sample=sample))
+            except vcfIO.NoSuchTagException:
+                geno2='./.'
+            try:
+                geno_qual2=str(other_record.get_genotype_quality(sample=sample))
+            except vcfIO.NoSuchTagException:
+                geno_qual2='0'
+            try:
+                depth2=str(other_record.get_sample_depth(sample=sample))
+            except vcfIO.NoSuchTagException:
+                depth2='0'
+            other_qual = other_record.get_qual()
+        try:
+            geno1=str(record.get_genotype(sample=sample))
+        except vcfIO.NoSuchTagException:
+            geno1='./.'
+        
+        try:
+            geno_qual1=str(record.get_genotype_quality(sample=sample))
+        except vcfIO.NoSuchTagException:
+            geno_qual1='0'
+        
+        try:
+            depth1=str(record.get_sample_depth(sample=sample))
+        except vcfIO.NoSuchTagException:
+            depth1='0'
+        
+        if geno_qual1=='0' and geno_qual2=='0':
+            continue
+        if geno2=='./.' and geno1=='./.':
+            continue
+        if depth1=='0' and depth2=='0':
+            continue
+        out=[]
+        out.append(record.get_reference())
+        out.append(str(record.get_position()))
+        out.append(str(record.get_qual()))
+        out.append(str(other_qual))
+        out.append(geno1)
+        out.append(geno2)
+        out.append(geno_qual1)
+        out.append(geno_qual2)
+        out.append(depth1)
+        out.append(depth2)
+        if geno1!='./.':
+            allele1, allele2 = geno1.split('/')
+            bases =[record.get_reference_base()]
+            bases.extend(record.get_alt_bases())
+            if len(bases)>int(allele1) and len(bases)>int(allele2):
+                geno1='%s/%s'%(bases[int(allele1)], bases[int(allele2)])
+            else:
+                print bases, allele1, allele2  
+        if geno2!='./.':
+            allele1, allele2 = geno2.split('/')
+            bases =[other_record.get_reference_base()]
+            bases.extend(other_record.get_alt_bases())
+            
+            if len(bases)>int(allele1) and len(bases)>int(allele2):
+                geno2='%s/%s'%(bases[int(allele1)], bases[int(allele2)])
+            else:
+                print bases, allele1, allele2 
+        if geno1==geno2:
+            out.append('same_genotype')
+        else:
+            out.append('different_genotype')
+        out.append('%s->%s'%(geno1,geno2))
+        print '\t'.join(out)
+        
+    open_input.close()
+
+    
+
+if __name__=='__main__':
+    input_vcf_file=sys.argv[1]
+    input_vcf_file2=sys.argv[2]
+    if len(sys.argv)>3:
+        sample=sys.argv[3]
+        get_single_sample_genotypes(input_vcf_file, input_vcf_file2, sample)
+    else:
+        get_all_samples_geno(input_vcf_file, input_vcf_file2)

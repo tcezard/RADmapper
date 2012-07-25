@@ -1,0 +1,313 @@
+'''
+Created on 28 Jun 2010
+
+@author: tcezard
+'''
+import logging
+import os
+import command_runner
+import glob
+import utils
+from utils.DNA_tools import strand_is_positive
+from optparse import OptionParser
+from utils import utils_logging
+import sys
+from IO_interface.exon_loader import Exon_annotation_Retriver
+from gene_annotation import Base_annotator
+
+all_genes={}
+all_transcripts={}
+all_exons={}
+
+class Gene(object):
+    def __init__(self, gene_id, reference):
+        super(Gene, self).__setattr__('gene_id', gene_id)
+        super(Gene, self).__setattr__('reference', reference)
+        
+    def __setattr__(self, *args):
+         raise TypeError("Can't modify immutable instance of %s"%self.__class__.__name__)
+     
+    __delattr__ = __setattr__
+        
+    def __str__(self):
+        return str(self.reference+'\t'+self.gene_id)
+    
+def get_gene(gene_id,reference):
+    if not all_genes.has_key(gene_id):
+        gene = Gene(gene_id,reference)
+        all_genes[gene_id]=gene
+    else:
+        gene = all_genes.get(gene_id)
+    return gene
+    
+
+class Transcript(object):
+    def __init__(self, gene, transcript_id, transcript_start, transcript_end, cds_start, cds_end, strand):
+        super(Transcript, self).__setattr__('gene', gene)
+        super(Transcript, self).__setattr__('transcript_id', transcript_id)
+        super(Transcript, self).__setattr__('transcript_start', transcript_start)
+        super(Transcript, self).__setattr__('transcript_end', transcript_end)
+        super(Transcript, self).__setattr__('cds_start', cds_start)
+        super(Transcript, self).__setattr__('cds_end', cds_end)
+        if strand_is_positive(strand):
+            super(Transcript, self).__setattr__('strand', '+')
+        else:
+            super(Transcript, self).__setattr__('strand', '-')
+        
+    def __setattr__(self, *args):
+         raise TypeError("Can't modify immutable instance of %s"%self.__class__.__name__)
+     
+    __delattr__ = __setattr__
+        
+    def __str__(self):
+        return '\t'.join([str(self.gene), str(self.transcript_id), str(self.transcript_start),
+                   str(self.transcript_end), str(self.cds_start), str(self.cds_end), str(self.strand)])
+
+def get_transcript(gene_id, reference, transcript_id, transcript_start, transcript_end, cds_start, cds_end, strand):
+    if not all_transcripts.has_key(transcript_id):
+        gene = get_gene(gene_id,reference)
+        transcript = Transcript(gene, transcript_id, transcript_start, transcript_end, cds_start, cds_end, strand)
+        all_transcripts[transcript_id]=transcript
+    else:
+        transcript = all_transcripts.get(transcript_id)
+    return transcript
+
+class Exon(object):
+    def __init__(self, transcript, exon_number):
+        super(Exon, self).__setattr__('transcript', transcript)
+        super(Exon, self).__setattr__('exon_number', exon_number)
+        
+    def __setattr__(self, *args):
+         raise TypeError("Can't modify immutable instance of %s"%self.__class__.__name__)
+     
+    __delattr__ = __setattr__
+    
+    def __str__(self):
+        return '\t'.join([str(self.transcript), str(self.exon_number)])
+    
+def get_exon(gene_id, reference, transcript_id, transcript_start, transcript_end, cds_start, cds_end, strand, exon_number):
+    if not all_exons.has_key('%s%s'%(transcript_id, exon_number)):
+        transcript  = get_transcript(gene_id, reference, transcript_id, transcript_start, transcript_end, cds_start, cds_end, strand)
+        exon = Exon(transcript, exon_number)
+        all_exons['%s%s'%(transcript_id,exon_number)]=exon
+    else:
+        exon = all_exons.get('%s%s'%(transcript_id,exon_number))
+    return exon
+        
+def annotate_genomic_location(location_file, annotation_file, output_file):
+    annotation_retriver=Exon_annotation_Retriver(annotation_file=annotation_file)
+    open_file= utils_logging.open_input_file(location_file,pipe=True)
+    open_output_file = utils_logging.open_output_file(output_file,pipe=True)
+    base_annotator=None
+    curr_reference=''
+    for line in open_file:
+        line = line.strip()
+        if line.startswith('#'):
+            open_output_file.write(line+'\n')
+            continue
+        sp_line = line.split()
+        reference = sp_line[0]
+        position = int(sp_line[1])
+        if curr_reference!=reference:
+            try :
+                base_annotator=Base_annotator.Base_annotator2(reference, annotation_retriver, merged_transcript=False, no_cds=True)
+            except Base_annotator.Unsupported_chromosome:
+                logging.error("No chromosome named %s in %s"%(reference, annotation_retriver.get_source()))
+                base_annotator=None
+            curr_reference=reference
+            
+        if base_annotator is not None:
+            list_annotations=base_annotator.get_annotation(position)
+            out = []  
+            if list_annotations:
+                for annotation in list_annotations:
+                    anno_type, gene_info=annotation
+                    #ENSG00000227232\tENST00000423562\t10\t14363\t29370\t17276\t24843\t-
+                    gene_id ,transcript_id, exon_number, transcript_start, transcript_end, cds_start, cds_end, strand= gene_info.split('\t')
+                    exon = get_exon(gene_id, reference, transcript_id, transcript_start, transcript_end, cds_start, cds_end, strand, exon_number)
+                    out.append('%s:%s:%s:%s'%(gene_id ,transcript_id, exon_number,strand))
+                open_output_file.write('%s\t%s\n'%(line,'\t'.join(out)))
+            else:
+                open_output_file.write(line+'\n')
+        else:
+            open_output_file.write(line+'\n')
+        
+    open_file.close()
+    open_output_file.close()
+
+def initialize_hash_of_gene(base_annotator):
+    all_annotation_per_gene={}
+    for gene_id in base_annotator.get_all_gene_id():
+        # For all existing transcript of this gene
+        for transcript_id in base_annotator.get_all_transcript_id(gene_id):
+            # get the general transcript information
+            transcript_info=base_annotator.get_all_transcript_info(gene_id,transcript_id)
+            (transcript_start,transcript_end,cds_start,cds_end,strand,sum_exon,
+            sum_intron,list_exon_start_end,list_intron_start_end)=transcript_info
+            transcript = get_transcript(gene_id, base_annotator.chr, transcript_id, transcript_start, transcript_end, cds_start, cds_end, strand)
+            gene = transcript.gene
+            all_annotation_per_transcript = all_annotation_per_gene.get(gene)
+            if not all_annotation_per_transcript:
+                all_annotation_per_transcript={}
+                all_annotation_per_gene[gene]=all_annotation_per_transcript
+            all_tags = all_annotation_per_transcript.get(transcript)
+            if not all_tags:
+                all_tags=[]
+                all_annotation_per_transcript[transcript]=all_tags
+    return all_annotation_per_gene
+
+def count_genomic_location_within_gene_per_chr(location_stream, annotation_file, merge_transcript):
+    annotation_retriver=Exon_annotation_Retriver(annotation_file=annotation_file)
+    
+    base_annotator=None
+    curr_reference=None
+    all_annotation_per_gene={}
+    
+    for line in location_stream:
+        line = line.strip()
+        if line.startswith('#'):
+            open_output_file.write(line+'\n')
+            continue
+        sp_line = line.split()
+        reference = sp_line[0]
+        position = int(sp_line[1])
+        if curr_reference!=reference:
+            if curr_reference is not None:
+                yield curr_reference, all_annotation_per_gene
+            logging.info('annotating %s'%(reference))
+            try :
+                base_annotator=Base_annotator.Base_annotator2(reference, annotation_retriver, merged_transcript=merge_transcript, no_cds=True)
+            except Base_annotator.Unsupported_chromosome:
+                logging.error("No chromosome named %s in %s"%(reference,annotation_retriver.get_source()))
+                base_annotator=None
+            
+            if base_annotator is not None:
+                all_annotation_per_gene=initialize_hash_of_gene(base_annotator)
+            else:
+                all_annotation_per_gene={}
+            curr_reference=reference
+            
+            
+        if base_annotator is not None:
+            list_annotations = base_annotator.get_annotation(position)
+            out = []
+            if list_annotations:
+                in_exon=False
+                for annotation in list_annotations:
+                    anno_type, gene_info=annotation
+                    if anno_type==Base_annotator.EXON or anno_type==Base_annotator.UTR5 or\
+                    anno_type==Base_annotator.UTR3 or anno_type==Base_annotator.CDS:
+                        #ENSG00000227232\tENST00000423562\t10\t14363\t29370\t17276\t24843\t-
+                        in_exon=True
+                        gene_id ,transcript_id, exon_number, transcript_start, transcript_end, cds_start, cds_end, strand= gene_info.split('\t')
+                        exon = get_exon(gene_id,reference, transcript_id, transcript_start, transcript_end, cds_start, cds_end, strand, exon_number)
+                        transcript = exon.transcript
+                        gene= transcript.gene
+                        all_annotation_per_transcript = all_annotation_per_gene.get(gene)
+                        if not all_annotation_per_transcript:
+                            all_annotation_per_transcript={}
+                            all_annotation_per_gene[gene]=all_annotation_per_transcript
+                        all_tags = all_annotation_per_transcript.get(transcript)
+                        if not all_tags:
+                            all_tags=[]
+                            all_annotation_per_transcript[transcript]=all_tags
+                        all_tags.append(line)
+                if not in_exon:
+                    add_annotation_not_in_gene(all_annotation_per_gene, line)
+            else:
+                add_annotation_not_in_gene(all_annotation_per_gene, line)
+        else:
+            add_annotation_not_in_gene(all_annotation_per_gene, line)
+    yield curr_reference, all_annotation_per_gene
+            
+
+def add_annotation_not_in_gene(all_annotation_per_gene,line):
+    gene_id='Not_in_gene'
+    transcript_id='Not_in_transcript'
+    all_annotation_per_transcript = all_annotation_per_gene.get(gene_id)
+    if not all_annotation_per_transcript:
+        all_annotation_per_transcript={}
+        all_annotation_per_gene[gene_id]=all_annotation_per_transcript
+    all_tags = all_annotation_per_transcript.get(transcript_id)
+    if not all_tags:
+        all_tags=set()
+        all_annotation_per_transcript[transcript_id]=all_tags
+    all_tags.add(line)
+    
+def output_all_annotation_per_gene(all_annotation_per_gene, output_stream):
+    for gene_id in all_annotation_per_gene.keys():
+        all_annotation_per_transcript = all_annotation_per_gene.get(gene_id)
+        for transcript_id in all_annotation_per_transcript.keys():
+            all_tags = all_annotation_per_transcript.get(transcript_id)
+            output_stream.write('%s\t%s\t%s\n'%(gene_id, transcript_id, '\t'.join([':'.join(tags.split("\t")) for tags in all_tags])))
+    
+
+def group_genomic_location_in_gene(location_file, annotation_file, output_file):
+    location_stream= utils_logging.open_input_file(location_file,pipe=True)
+    output_stream = utils_logging.open_output_file(output_file,pipe=True)
+    for curr_reference, annotation_per_gene in count_genomic_location_within_gene_per_chr(location_stream, annotation_file):
+        output_all_annotation_per_gene(annotation_per_gene, output_stream)
+    location_stream.close()
+    output_stream.close()
+    
+    
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    if not options.gene_to_location:
+        annotate_genomic_location(location_file=options.input_file, annotation_file=options.annotation_file, output_file=options.output_file)
+    else:
+        group_genomic_location_in_gene(location_file=options.input_file, annotation_file=options.annotation_file, output_file=options.output_file)
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-p project_id> [-s sample_id -r run_element_id]"""
+    description = """This annotate the position contained in a file with the annotation from a second file."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-i","--input_file",dest="input_file",type="string",
+                         help="The file containing the location on the genome.")
+    optparser.add_option("-o","--output_file",dest="output_file",type="string",
+                         help="The file where the annotated location will be output.")
+    optparser.add_option("-a","--annotation_file",dest="annotation_file",type="string",
+                         help="The annotation files in ucsc, bed, gff or exons format.")
+    optparser.add_option("--gene_to_location",dest="gene_to_location",action='store_true', default=False,
+                         help="set the script to output all the genes and transcripts with the location that falls inside them.")
+    optparser.add_option("--print",dest="print_commands",action='store_true', default=False,
+                         help="Make the script to print the commands instead of running.")
+    
+    
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.input_file:
+        logging.error("You must specify an input file -i.")
+        arg_pass=False
+    if not options.output_file:
+        logging.error("You must specify an output file with -o.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

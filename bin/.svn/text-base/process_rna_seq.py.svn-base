@@ -1,0 +1,175 @@
+'''
+Created on 28 Jun 2010
+
+@author: tcezard
+'''
+import logging
+import os
+import command_runner
+import glob
+from get_data_from_seqarchive import get_data_from_seqarchive
+import utils
+from optparse import OptionParser
+from utils import utils_logging, longest_common_substr_from_start
+import sys
+from wiki_communication import get_wiki_project
+from pipeline_directory_structure import create_directory_structure
+from utils.utils_param import get_pipeline_places
+import run_GSNAP_commands
+from run_GSNAP_commands import prepare_genome
+
+
+            
+def process_rna_seq(all_projects_folder, project_id, sample_id, run_elemt_id, genome_file, annotation_file, overwrite, print_commands=False):
+    if not print_commands:
+        command_runner.set_command_to_run_localy()
+    #create directory for the main project folders
+    project_dir, sample_dir, run_dir=create_directory_structure(all_projects_folder, project_id, sample_id, run_elemt_id)
+    log_file_name=os.path.join(run_dir,'%s_process_rna_seq.log'%run_elemt_id)
+    utils_logging.init_logging(output_level=None, log_file_name=log_file_name, overwrite=overwrite)
+    logging.info('Retrieve the data from seqarchive')
+    all_fastq=get_data_from_seqarchive(all_projects_folder, project_id, sample_id, run_elemt_id, overwrite, link=True, sanger_fastq=False)
+    
+    if print_commands:
+        all_fastq=[]
+        run_elemnt_dir = glob.glob(os.path.join(all_projects_folder,project_id+'*','*',run_elemt_id+'*'))[0]
+        all_fastq.append(os.path.join(run_elemnt_dir,run_elemt_id+'_1.solfastq.gz'))
+        all_fastq.append(os.path.join(run_elemnt_dir,run_elemt_id+'_2.solfastq.gz'))
+        
+    if len(all_fastq)>2:
+        logging.error('More than 2 fastq files were found: %s'%(', '.join(all_fastq)))
+    elif len(all_fastq)==0:
+        logging.error('No fastq file was found in %s for project %s, sample %s run %s'%(all_projects_folder,
+                                                                                        project_id,sample_id,run_elemt_id))
+    else:
+        all_fastq.sort()
+        run_fine=align_GSNAP(all_fastq[0],all_fastq[1], genome_file, annotation_file, overwrite, sample_id, run_elemt_id)
+        #if run_fine:
+        #    command='rm -f %s'%all_fastq[0]
+        #    command_runner.run_command(command)
+
+
+def align_GSNAP(fastq_file, fastq_file2, genome_file, annotation_file, overwrite, sample_id, run_elemt_id):
+    run_fine=True
+    logging.info('Process rna seq sample')
+    if fastq_file2:
+        fastq_name = longest_common_substr_from_start(fastq_file,fastq_file2)
+        #remove trailing underscore _
+        sample_name = fastq_name.rstrip('_')
+    else:
+        sample_name, ext =os.path.splitext(os.path.basename(fastq_file))
+        sample_name=sample_name.rstrip('_1')
+    aligned_bam = os.path.join(os.path.dirname(fastq_file),'gsnap', sample_name+'_sorted.bam')
+    
+    if not os.path.exists(aligned_bam) or overwrite:
+        logging.info('Align the reads to genome')
+        output_dir=os.path.join(os.path.dirname(fastq_file),'gsnap')
+        utils.createDirectories('', [output_dir])
+        if not run_GSNAP_commands.run_GSNAP_Command(genome_file=genome_file, fastq_file1=fastq_file,
+                                                    fastq_file2=fastq_file2, output_dir=output_dir,
+                                                    sample_name=sample_name, clean_up=True, thread=8,
+                                                    annotation_file=annotation_file, read_group_id=run_elemt_id,
+                                                    read_group_name=sample_id):
+            run_fine=False
+        
+    return run_fine
+    
+def process_all_rna_seq(project_id, genome_file, annotation_file, overwrite, project_dir=None):
+    project=get_wiki_project(project_id)
+    samples=project.get_samples()
+    process_path=sys.argv[0]
+    for sample in samples:
+        run_elements = sample.get_run_elements()
+        if run_elements is not None:
+            for run_element in sample.get_run_elements():
+                command='python %s -p "%s" -s "%s" -r "%s" -g %s -a %s'%(process_path,project_id, sample.id, run_element.id, genome_file, annotation_file)
+                if overwrite:
+                    command+=' --force'
+                if project_dir:
+                    command+=' -P %s'%project_dir
+                command_runner.run_command(command)
+    
+        
+    
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.DEBUG)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    if options.projects_dir is None:
+        pipeline_places = get_pipeline_places()
+        all_projects_folder = pipeline_places.get_illumina_project_dir()
+    else:
+        all_projects_folder=options.projects_dir
+    
+    #if not check_genome_index(options.genome_file):
+    #    sys.exit(1)
+    sys.exit(1)
+
+    if options.sample_id is not None and options.run_element_id is not None:
+        process_rna_seq(all_projects_folder, options.project_id, options.sample_id, options.run_element_id, options.genome_file,
+                        annotation_file=options.annotation_file, overwrite=options.force, print_commands=options.print_commands )
+    else:
+        process_all_rna_seq(options.project_id, options.genome_file, annotation_file=options.annotation_file, 
+                            overwrite=options.force, project_dir=options.projects_dir)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-p project_id> [-s sample_id -r run_element_id]"""
+    description = """This Script create or execute commands that will process RNA seq samples.
+    The process include finding the raw fastq file in solexa format convert them into sanger fastq format,
+    and align the reads to the provided genome.
+    """
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-p","--project_id",dest="project_id",type="string",
+                         help="The project id to analyse.")
+    optparser.add_option("-g","--genome_file",dest="genome_file",type="string",
+                         help="The genome file used for that analysis.")
+    optparser.add_option("-a","--annotation_file",dest="annotation_file",type="string",
+                         help="The annotation that define the exon-exon junctions.")
+    optparser.add_option("-s","--sample_id",dest="sample_id",type="string",
+                         help="The sample to analyse.")
+    optparser.add_option("-r","--run_element_id",dest="run_element_id",type="string",
+                         help="The run element id to analyse.")
+    optparser.add_option("-P","--projects_dir",dest="projects_dir",type="string",
+                         help="Change the project dir from the default ~/projects.")
+    optparser.add_option("--force",dest="force",action='store_true', default=False,
+                         help="Force the process to happen by overwriting any existing files.")
+    optparser.add_option("--print",dest="print_commands",action='store_true', default=False,
+                         help="Make the script to print the commands instead of running.")
+    
+    
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.project_id:
+        logging.error("You must specify an project id with -p.")
+        arg_pass=False
+    if not options.genome_file:
+        logging.error("You must specify an genome file with -g.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

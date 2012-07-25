@@ -1,0 +1,778 @@
+import logging
+import SNPs
+from gene_annotation import Base_annotator
+from utils import DNA_tools, utils_logging
+from utils import GenomeLoader
+from IO_interface.exon_loader import Exon_annotation_Retriver
+
+INPUT_TYPE_VCF='vcf'
+INPUT_TYPE_STD='std'
+INPUT_TYPE=[INPUT_TYPE_VCF, INPUT_TYPE_STD]
+
+STATUS_NONE=0
+STATUS_QUESTION=1
+STATUS_SYNONYMOUS=8
+STATUS_CODING=16
+
+
+VARIATION_INS='+'
+VARIATION_DEL='-'
+VARIATION_SNP=''
+
+    
+class Annotated_spindel:
+    def __init__(self, chr, start, ref_base, var_base, line=None):
+        self.chr=chr
+        self.start=start
+        if var_base.startswith('-'):
+            self.type=VARIATION_DEL
+            self.var_base=var_base[1:]
+            self.start=int(self.start)+1
+            self.end=int(self.start)+len(self.var_base)
+        elif var_base.startswith('+'):
+            self.type=VARIATION_INS
+            self.var_base=var_base[1:]
+            self.end=self.start
+        else:
+            self.type=VARIATION_SNP
+            self.var_base=var_base
+            self.end=self.start
+        self.ref_base=ref_base
+        self.line=line
+        self.all_transcript={}
+        self.all_keys={}
+        
+        
+    def add(self, transcript_id, gene_id='.', exon_intron_number='.', type='.', strand='.',
+            dist_TSS='.', dist_TTS='.', dist_cds_start='.', dist_cds_end='.',
+            codon='.', position_in_codon='.', AA='.', new_codon='.', new_AA='.', status='.'):
+        key_array=[]
+        key_array.append(gene_id)                  # 0
+        key_array.append(strand)                   # 1
+        key_array.append('.')                      # 2 place holder for the transcript_id list
+        key_array.append(str(type))                # 3
+        key_array.append(str(exon_intron_number))  # 4
+        key_array.append(codon)                    # 5
+        key_array.append(str(position_in_codon))   # 6
+        key_array.append(new_codon)                # 7
+        key_array.append(AA)                       # 8
+        key_array.append(new_AA)                   # 9
+        key_array.append(status)                   # 10
+        key_array.append(str(dist_TSS))            # 11
+        key_array.append(str(dist_TTS))            # 12
+        key_array.append(str(dist_cds_start))      # 13
+        key_array.append(str(dist_cds_end))        # 14
+        new_key='\t'.join(key_array)
+        if not transcript_id:
+            transcript_id='.'
+        old_key=self.all_keys.get(transcript_id)
+        if old_key:
+            if old_key!=new_key:
+                old_key_array=old_key.split('\t')
+                for pos in range(len(old_key_array)):
+                    if key_array[pos]=='.':
+                        key_array[pos]=old_key_array[pos]
+                list_transcript=self.all_transcript.get(old_key)
+                new_key='\t'.join(key_array)
+                list_transcript.remove(transcript_id)
+                self.all_keys[transcript_id]=new_key
+                if len(list_transcript)==0:
+                    self.all_transcript.pop(old_key)
+                
+                list_transcript=self.all_transcript.get(new_key)
+                if not list_transcript:
+                    list_transcript=[]
+                    self.all_transcript[new_key]=list_transcript
+                list_transcript.append(transcript_id)
+            
+        else:
+            self.all_keys[transcript_id]=new_key
+            list_transcript=self.all_transcript.get(new_key)
+            if not list_transcript:
+                list_transcript=[]
+                self.all_transcript[new_key]=list_transcript
+            list_transcript.append(transcript_id)
+            
+    def to_string(self):
+        string_to_return=[]
+        elmt_array=[self.line]
+        if len(self.all_transcript)==0:
+            string_to_return.append('\t'.join(elmt_array))
+            
+        for key in self.all_transcript.keys():
+            key_array=key.split('\t')
+            list_transcript=self.all_transcript.get(key)
+            key_array[2]=','.join(list_transcript)
+            key_array[3]=Base_annotator.get_type_str(key_array[3])
+            string_to_return.append('%s\t%s'%('\t'.join(elmt_array), '\t'.join(key_array)))
+        return '\n'.join(string_to_return)
+    
+                
+    def summary_str(self,):
+        curr_type=Base_annotator.INTERGENIC
+        curr_status='.'
+        for key in self.all_transcript.keys():
+            key_array=key.split('\t')
+            type=key_array[3]
+            status=key_array[10]
+            if int(type)<curr_type:
+                curr_type=int(type)
+            
+            if status and status!='.':
+                if curr_status!='CODING':
+                    curr_status=status
+        elmt_array=[self.line]
+        return '%s\t%s\t%s'%('\t'.join(elmt_array),  Base_annotator.get_type_str(curr_type),
+                                        curr_status)
+    
+    
+
+
+all_cdna_for_chr={}
+
+    
+
+def annotate_indels(input_indels_file, output_file, genome_file, annotation_file=None, simple=False, input_type=INPUT_TYPE_STD):
+    """Annotate any snv or indel from the input file using an annotation database and the fasta file containing the genome.
+    It uses Base_annotator2 that is optimized for a small number of query spread on the chromosome."""
+    open_input=utils_logging.open_input_file(input_indels_file)
+    open_output=utils_logging.open_output_file(output_file)
+    open_summary=open(output_file+'.summary','w')
+    genome_loader=GenomeLoader.GenomeLoader(genome_file, keep_in_memory=True, keep_until_done=False)
+    annotation_retriver=Exon_annotation_Retriver(annotation_file=annotation_file)
+    read_line=read_line_indel_std
+    if input_type==INPUT_TYPE_VCF:
+        read_line=read_line_indel_vcf
+        
+    curr_chr=None
+    base_annotator=None
+    count_line=0
+    count_output=0
+    count_output_summary=0
+    count_no_gene=0
+    if open_input:
+        for line in open_input:
+            if line.startswith('#'):
+                #pass the comment lines
+                continue
+            sp_line=line.strip().split("\t")
+            indel_info=read_line(sp_line)
+            if indel_info:
+                (chr,coordinate,ref_base, indel_alleles)=indel_info
+            else:
+                logging.error("%s was not parsed properly"%line.strip())
+                continue
+            list_annotated_spindel=[]
+            for indel_allele in indel_alleles:
+                list_annotated_spindel.append(Annotated_spindel(chr, coordinate, ref_base, indel_allele ,line.strip()))
+                
+            if chr!=curr_chr:
+                #New chromosome need close the old one and load the new one. 
+                logging.info("annotate %s"%chr)
+                if base_annotator:
+                    base_annotator.close()
+                    
+                fasta_seq=genome_loader.get_chr(chr)
+                if fasta_seq:
+                    dummy,chr_sequence=fasta_seq
+                    try :
+                        base_annotator=Base_annotator.Base_annotator2(chr, annotation_retriver, merged_transcript=False, no_cds=False)
+                    except Base_annotator.Unsupported_chromosome:
+                        logging.error("No chromosome named %s in %s"%(chr,annotation_retriver.get_source()))
+                        base_annotator=None
+                        chr_sequence=None
+                else:
+                    logging.error("No chromosome named %s in the fasta file %s"%(chr,genome_file))
+                    base_annotator=None
+                    chr_sequence=None
+                curr_chr=chr
+            
+            if base_annotator and fasta_seq:
+                # we have information for this chromosome
+                list_annotations=base_annotator.get_annotation(coordinate)
+                for annotated_spindel in list_annotated_spindel:
+                     
+                    if not list_annotations:
+                        #logging.warning('No annotation found at %s:%s'%(curr_chr,coordinate))
+                        annotated_spindel.add(None,type=Base_annotator.INTERGENIC)
+                    else:
+                        for annotation in list_annotations:
+                            (type,value)=annotation
+                            (gene_id, transcript_id, exon_intron_number,\
+                            transcript_start, transcript_end, cds_start,\
+                            cds_end, strand)=value.split('\t')
+                            
+                            annotated_spindel.add(transcript_id, gene_id=gene_id,
+                                              exon_intron_number=exon_intron_number,
+                                              type=type, strand=strand)
+                            if not type==Base_annotator.INTRON:
+                                if type==Base_annotator.EXON and not simple:
+                                    (dist_TSS,dist_TTS)=get_distances_transcript_start_end(annotated_spindel.start, base_annotator,
+                                                                                       chr_sequence, gene_id, transcript_id)
+                                    annotated_spindel.add(transcript_id, dist_TSS=dist_TSS,dist_TTS=dist_TTS)
+                                    
+                                elif not simple:
+                                    (dist_TSS,dist_TTS,
+                                     dist_cds_start, dist_cds_end)=get_distances(coordinate, base_annotator,
+                                                                            chr_sequence, gene_id, transcript_id)
+                                    annotated_spindel.add(transcript_id, dist_TSS=dist_TSS,dist_TTS=dist_TTS,
+                                                      dist_cds_start=dist_cds_start,dist_cds_end=dist_cds_end)
+                                if type==Base_annotator.CDS:
+                                    (codon, position_in_codon, warning)=get_cdna_region(coordinate, base_annotator,
+                                                                                        chr_sequence, gene_id, transcript_id,
+                                                                                        length=len(annotated_spindel.type+annotated_spindel.var_base)-1)
+                                    if warning:
+                                        annotated_spindel.add(transcript_id, codon=codon+'?', position_in_codon=position_in_codon)
+                                    else:
+                                        annotated_spindel.add(transcript_id, codon=codon, position_in_codon=position_in_codon)
+                                    info=get_coding_info_from_spindel(chr, coordinate, strand, codon, position_in_codon,
+                                                                      ref_base, annotated_spindel.var_base, annotated_spindel.type)
+                                    if info:
+                                        (AA, new_AA, new_codon, status)=info
+                                        if warning:
+                                            annotated_spindel.add(transcript_id, AA=AA+'?', new_AA=new_AA+'?',
+                                                          new_codon=new_codon+'?', status=status+'?')
+                                        else:
+                                            annotated_spindel.add(transcript_id, AA=AA, new_AA=new_AA,
+                                                          new_codon=new_codon, status=status)
+                                    else:
+                                        status="UNKNOWN"
+                                   
+                                        
+                    out=str(annotated_spindel.to_string())
+                    count_output+=len(out.split('\n'))
+                    open_output.write(out+'\n')
+                    out=annotated_spindel.summary_str()
+                    count_output_summary+=len(out.split('\n'))
+                    open_summary.write(out+'\n')
+            else:
+                # no gene  in the annotation or no sequence
+                count_no_gene+=1
+                for annotated_snv in list_annotated_spindel:
+                    annotated_snv.add(None,type=Base_annotator.INTERGENIC)
+                    out=str(annotated_snv.to_string())
+                    count_output+=len(out.split('\n'))
+                    open_output.write(out+'\n')
+                    out=annotated_snv.summary_str()
+                    count_output_summary+=len(out.split('\n'))
+                    open_summary.write(out+'\n')
+            count_line+=1
+            if count_line%1000==0:
+                logging.debug("%s lines read form %s"%(count_line,input_indels_file))
+                logging.debug("%s annotated line output in %s"%(count_output,output_file))
+                logging.debug("%s annotated line summarize in %s"%(count_output_summary,output_file+'.summary'))
+    if count_no_gene>0:
+        logging.warning('%s lines with no gene found'%(count_no_gene))
+    logging.info("%s lines read form %s"%(count_line,input_indels_file))
+    logging.info("%s annotated line output in %s"%(count_output,output_file))
+    logging.info("%s annotated line summarize in %s"%(count_output_summary,output_file+'.summary'))
+    
+    open_input.close()
+    open_output.close()
+    open_summary.close()
+
+def get_codon(position, base_annotator, chr_sequence, gene_id, transcript_id):
+    """This function retrieve the codon at the specified position for the specified gene id/transcript id.
+    It reports the codon on the strand of the gene (the coding strand).
+    It also retrieve the distance between the position and starts and ends of annotations.
+    """
+    warning=False
+    transcript_info=base_annotator.get_all_transcript_info(gene_id,transcript_id)
+    if not transcript_info:
+        logging.error("No information for couple %s, %s"%(gene_id,transcript_id))
+        return None
+    (transcript_start, transcript_end, cds_start,cds_end, strand,sum_exon,\
+    sum_intron, list_exon_start_end, list_intron_start_end)=transcript_info
+    
+    cdna_sequence_base_added_warning=all_cdna_for_chr.get(transcript_id)
+    if not cdna_sequence_base_added_warning:
+        (cdna_sequence,base_added,warning)=get_cdna_sequence(chr_sequence, list_exon_start_end, cds_start, cds_end, strand)
+        if len(warning)>0:
+            for warn in warning:
+                logging.warning('sequence of %s %s'%(transcript_id, warn))
+        if cdna_sequence:
+            all_cdna_for_chr[transcript_id]=(cdna_sequence,base_added,warning)
+        else:
+            return 
+    else:
+        (cdna_sequence,base_added,warning)=cdna_sequence_base_added_warning
+    if DNA_tools.strand_is_positive(strand):
+        pos_in_cdna=get_position_in_cdna_pos_strand(position, list_exon_start_end, cds_start, cds_end)
+        pos_in_codon=(pos_in_cdna%3)
+        if pos_in_codon==0:
+            pos_in_codon=3
+        start_codon=pos_in_cdna-pos_in_codon
+        end_codon=start_codon+3
+    else:
+        
+        pos_in_cdna=get_position_in_cdna_pos_strand(position, list_exon_start_end, cds_start, cds_end)
+        pos_in_cdna=pos_in_cdna+base_added
+        pos_in_cdna=len(cdna_sequence)-pos_in_cdna+1
+        pos_in_codon=(pos_in_cdna%3)
+        if pos_in_codon==0:
+            pos_in_codon=3
+        start_codon=pos_in_cdna-pos_in_codon
+        end_codon=start_codon+3
+    return (cdna_sequence[start_codon:end_codon].upper(),pos_in_codon, warning)
+
+
+def get_cdna_region(position, base_annotator, chr_sequence, gene_id, transcript_id, length=0):
+    """This function retrieve the codon at the specified position for the specified gene id/transcript id.
+    It reports the codon on the strand of the gene (the coding strand).
+    It also retrieve the distance between the position and starts and ends of annotations."""
+    warning=False
+    transcript_info=base_annotator.get_all_transcript_info(gene_id,transcript_id)
+    if not transcript_info:
+        logging.error("No information for couple %s, %s"%(gene_id,transcript_id))
+        return None
+    (transcript_start, transcript_end, cds_start,cds_end, strand,sum_exon,\
+    sum_intron, list_exon_start_end, list_intron_start_end)=transcript_info
+    or_length=length
+    length=(((length+2)/3)+1)*3
+    cdna_sequence_base_added_warning=all_cdna_for_chr.get(transcript_id)
+    if not cdna_sequence_base_added_warning:
+        (cdna_sequence,base_added,warning)=get_cdna_sequence(chr_sequence, list_exon_start_end, cds_start, cds_end, strand)
+        if len(warning)>0:
+            for warn in warning:
+                logging.warning('sequence of %s %s'%(transcript_id, warn))
+        if cdna_sequence:
+            all_cdna_for_chr[transcript_id]=(cdna_sequence,base_added,warning)
+        else:
+            return 
+    else:
+        (cdna_sequence,base_added,warning)=cdna_sequence_base_added_warning
+        
+    if DNA_tools.strand_is_positive(strand):
+        pos_in_cdna=get_position_in_cdna_pos_strand(position, list_exon_start_end, cds_start, cds_end)
+        pos_in_codon=(pos_in_cdna%3)
+        if pos_in_codon==0:
+            pos_in_codon=3
+        start_codon=pos_in_cdna-pos_in_codon
+        end_region=start_codon+length
+         
+    else:
+        pos_in_cdna=get_position_in_cdna_pos_strand(position, list_exon_start_end, cds_start, cds_end)
+        pos_in_cdna=pos_in_cdna+base_added
+        pos_in_cdna=len(cdna_sequence)-pos_in_cdna+1 #on the negative strand
+        if or_length>0:
+            pos_in_cdna=pos_in_cdna-or_length+1
+        pos_in_codon=(pos_in_cdna%3)
+        if pos_in_codon==0:
+            pos_in_codon=3
+        start_codon=pos_in_cdna-pos_in_codon
+        end_region=start_codon+length
+    return (cdna_sequence[start_codon:end_region].upper(),pos_in_codon, warning)
+
+
+
+def get_distances(position, base_annotator, chr_sequence, gene_id, transcript_id):
+    """This function retrieve the distance between the specified position and the starts and ends of annotations in the mRNA coordinate.
+    """
+    transcript_info=base_annotator.get_all_transcript_info(gene_id,transcript_id)
+    (transcript_start, transcript_end, cds_start,cds_end, strand,sum_exon,\
+    sum_intron, list_exon_start_end, list_intron_start_end)=transcript_info
+    
+    pos_in_mRNA=get_position_in_mRNA_pos_strand(position, list_exon_start_end)
+    cds_start_in_mRNA=get_position_in_mRNA_pos_strand(cds_start, list_exon_start_end)
+    cds_end_in_mRNA=get_position_in_mRNA_pos_strand(cds_end, list_exon_start_end)
+    if DNA_tools.strand_is_positive(strand):
+        dist_TSS=-pos_in_mRNA
+        dist_TTS=sum_exon-pos_in_mRNA
+        dist_cds_start=pos_in_mRNA-cds_start_in_mRNA
+        dist_cds_end=pos_in_mRNA-cds_end_in_mRNA
+    else:
+        dist_TSS=pos_in_mRNA-sum_exon
+        dist_TTS=pos_in_mRNA
+        dist_cds_start=pos_in_mRNA-cds_end_in_mRNA
+        dist_cds_end=pos_in_mRNA-cds_start_in_mRNA
+    return (dist_TSS,dist_TTS,dist_cds_start,dist_cds_end)
+
+def get_distances_transcript_start_end(position, base_annotator, chr_sequence, gene_id, transcript_id):
+    """This function retrieve the distance between the specified position and the starts and ends of annotations in the mRNA coordinate.
+    """
+    transcript_info=base_annotator.get_all_transcript_info(gene_id,transcript_id)
+    (transcript_start, transcript_end, cds_start,cds_end, strand,sum_exon,\
+    sum_intron, list_exon_start_end, list_intron_start_end)=transcript_info
+    
+    pos_in_mRNA=get_position_in_mRNA_pos_strand(position, list_exon_start_end)
+    if DNA_tools.strand_is_positive(strand):
+        dist_TSS=pos_in_mRNA
+        dist_TTS=sum_exon-pos_in_mRNA
+    else:
+        dist_TSS=sum_exon-pos_in_mRNA
+        dist_TTS=pos_in_mRNA
+    return (dist_TSS,dist_TTS)
+
+def get_position_in_cdna_pos_strand(position, list_exon_start_end, cds_start, cds_end):
+    list_exon_start_end.sort(cmp=Base_annotator.compare_exon_start)
+    pos_in_cdna=0
+    i=0
+    over=False
+    while not over and i<len(list_exon_start_end):
+        start,end=list_exon_start_end[i]
+        i+=1
+        if cds_start>end or cds_end<start:
+            continue
+        else:
+            if cds_start>start:
+                start=cds_start
+            if cds_end<end:
+                end=cds_end
+        if position > end:
+            pos_in_cdna+=end-start+1
+        elif position>= start:
+            exon_number=i
+            pos_in_cdna+=position-start+1
+            over=True
+        else:
+            logging.error("missuse of get_position_in_cdna_pos_strand function with position %s"%(position))
+            logging.error("cds_start=%s cds_end=%s start=%s end=%s"%(cds_start,cds_end,start,end))
+            logging.error("%s"%(', '.join(['%s-%s'%(s,e) for s,e in list_exon_start_end])))
+            raise Exception()
+            pos_in_cdna=0
+            over=True
+    if not over: 
+        return 0
+    else:
+        return pos_in_cdna
+
+
+def get_position_in_mRNA_pos_strand(position, list_exon_start_end):
+    list_exon_start_end.sort(cmp=Base_annotator.compare_exon_start)
+    pos_in_mRNA=0
+    i=0
+    over=False
+    while not over and i<len(list_exon_start_end):
+        start,end=list_exon_start_end[i]
+        i+=1
+        if position > end:
+            pos_in_mRNA+=end-start+1
+        elif position >= start:
+            pos_in_mRNA+=(position-start)+1
+            over=True
+        else:
+            logging.error("missuse of get_position_in_mRNA_pos_strand function with position %s"%(position))
+            logging.error("start=%s end=%s"%(start,end))
+            raise Exception()
+            pos_in_mRNA=0
+            over=True
+    if not over: 
+        logging.warning("position %s exons: %s"%(position, ', '.join(['%s-%s'%(start, end) for start, end in list_exon_start_end])))
+        return None
+    else:
+        return pos_in_mRNA
+
+def get_cdna_sequence(chr_sequence, exon_list, cds_start, cds_end, strand):
+    cdna_seq=[]
+    warning=[]
+    exon_list.sort(cmp=Base_annotator.compare_exon_start)
+    for exon in exon_list:
+        exon_start, exon_end=exon
+        if cds_start>exon_end or cds_end<exon_start:
+                continue
+        else:
+            if cds_start>exon_start:
+                exon_start=cds_start
+            if cds_end<exon_end:
+                exon_end=cds_end
+        #the chr sequence is in an array so 0_based
+        if int(exon_start)-1<len(chr_sequence) and int(exon_end)<=len(chr_sequence):
+            cdna_seq.append(chr_sequence[int(exon_start)-1:int(exon_end)])
+        else:
+            warning.append('exon %s-%s outside of chromosome boundaries length=%s'%(int(exon_start),int(exon_end),len(chr_sequence)))
+            return (None,None,warning)
+    full_sequence = ''.join(cdna_seq)
+    #Test the sequence to see if its length is a multiple of 3
+    remaining=len(full_sequence)%3
+    to_add=0
+    if not remaining==0:
+        to_add=3-remaining
+        if DNA_tools.strand_is_positive(strand):
+            #add remaining bases at the end of the sequence
+            if cds_end+to_add<=len(chr_sequence):
+                full_sequence=full_sequence+chr_sequence[cds_end-1:cds_end+to_add-1]
+            else:
+                full_sequence=full_sequence+('N'*to_add)
+        else:
+            #add remaining bases at the beginning of the sequence
+            if cds_start-to_add>0:
+                full_sequence=chr_sequence[cds_start-to_add-1:cds_start-1]+full_sequence
+            else:
+                full_sequence=('N'*to_add)+full_sequence
+        warning.append(' will have %d bases added cause its length=%s'%(to_add,len(full_sequence)-to_add))
+    
+    
+    if not DNA_tools.strand_is_positive(strand):
+        full_sequence=DNA_tools.rev_complements(full_sequence)
+    # Test the sequence to see if it starts with an M
+    AA, rest = translate_sequence(full_sequence[0:3])
+    if AA != 'M':
+        warning.append(' starts with %s instead of an M'%(AA))
+    # Test the sequence to see if it ends with a STOP
+    AA, rest = translate_sequence(full_sequence[-3:])
+    if AA != '*':
+        warning.append(' ends with %s instead of a STOP'%(AA))
+    
+    return (full_sequence,to_add,warning)
+            
+
+def get_coding_info_from_snp(chr,coordinate, strand, codon, pos_in_codon, ref_base, snp_base):
+    """summarize the coding information about this codon and the new codon using the snp base.
+    WARNING the snps is assume to always be on the positive strand (whatever the strand of the gene it's in), 
+    but the codon is on the coding strand (the strand of the gene it been found in).   
+    """
+    ref=ref_base
+    snp=snp_base
+    if not DNA_tools.strand_is_positive(strand):
+        ref=DNA_tools.complements(ref_base)
+        snp=DNA_tools.complements(snp_base)
+    if not codon[pos_in_codon-1]==ref and ref_base != '*':
+        logging.error("Reference base and base in the codon are different at %s:%s on %s strand: ref=%s -- codon's base=%s"%(chr,coordinate,strand,ref,codon[pos_in_codon-1]))
+        return None
+    else:
+        three_bases=list(codon)
+        three_bases[pos_in_codon-1]=snp
+        new_codon="".join(three_bases)
+        AA,rest=translate_sequence(codon)
+        if AA is not None:
+            new_AA, rest = translate_sequence(new_codon)
+            if len(rest) > 0:
+                status="FRAME_SHIFT_%s"%len(rest)
+            if AA != new_AA:
+                status="CODING"
+                if new_AA==DNA_tools.STOP_CODON:
+                    status+="_STOP"
+            else:
+                status="SYNONYMOUS"
+            
+            return (AA, new_AA, new_codon, status)
+        else:
+            logging.error("Codon %s does not exist. position=%s:%s strand=%s"%(codon,chr,coordinate,strand,))
+            return None
+
+        
+def get_coding_info_from_spindel(chr,coordinate, strand, codon, pos_in_codon, ref_base, alt_base, spindel_type):
+    """summarize the coding information about this codon and the new codon using the snp base.
+    WARNING the snps is assume to always be on the positive strand (whatever the strand of the gene it's in), 
+    but the codon is on the coding strand (the strand of the gene it been found in).   
+    """
+    if not DNA_tools.strand_is_positive(strand):
+        ref_base=DNA_tools.rev_complements(ref_base)
+        alt_base=DNA_tools.rev_complements(alt_base)
+        
+    if spindel_type==VARIATION_SNP:
+        if codon[pos_in_codon-1]!=ref_base:
+            logging.error("Reference bases %s and base in the codon %s are different at %s:%s on %s strand: "%(ref_base, codon[pos_in_codon-1],
+                                                                                                               chr,coordinate,strand))
+            logging.error("codon is %s position in codon is %s"%(codon, pos_in_codon))
+            return None
+    elif spindel_type==VARIATION_DEL:
+        if codon[pos_in_codon-1:pos_in_codon+len(alt_base)-1]!=alt_base:
+            logging.error('position %s: %s and %s are different. original codon = %s, pos in codon = %s'%(coordinate,codon[pos_in_codon-1:pos_in_codon+len(alt_base)-1],
+                                                                             alt_base, codon, pos_in_codon))
+            return None
+    else:
+        #no test for insertion
+        pass
+    if spindel_type==VARIATION_SNP:
+        three_bases=list(codon)
+        three_bases[pos_in_codon-1]=alt_base
+        new_codon="".join(three_bases)
+    elif spindel_type==VARIATION_DEL:
+        new_codon=codon[:pos_in_codon-1]+codon[pos_in_codon-1+len(alt_base):]
+    else:
+        if DNA_tools.strand_is_positive(strand):
+            new_codon=codon[:pos_in_codon]+alt_base+codon[pos_in_codon:]
+        else:
+            new_codon=codon[:pos_in_codon-1]+alt_base+codon[pos_in_codon-1:]
+        
+    AA,rest=translate_sequence(codon)
+    if AA is not None:
+        new_AA, rest = translate_sequence(new_codon)
+        if len(rest) > 0:
+            status="FRAME_SHIFT"
+        elif AA != new_AA:
+            status="CODING"
+            if new_AA==DNA_tools.STOP_CODON:
+                status+="_STOP"
+        else:
+            status="SYNONYMOUS"
+        
+        return (AA, new_AA, new_codon, status)
+    else:
+        logging.error("Codon %s does not exist. position=%s:%s strand=%s"%(codon,chr,coordinate,strand,))
+        return None
+
+
+def get_coding_info_from_del(chr, coordinate, strand, codon, pos_in_codon, ref_base, deleted_base):
+    """summarize the coding information about this codon and the new codon using the snp base.
+    WARNING the snps is assume to always be on the positive strand (whatever the strand of the gene it's in), 
+    but the codon is on the coding strand (the strand of the gene it been found in).   
+    """
+    if not DNA_tools.strand_is_positive(strand):
+        deleted_base=DNA_tools.complements(deleted_base)
+    else:
+        if not codon[pos_in_codon:pos_in_codon+len(deleted_base)]==deleted_base:
+            logging.error('%s and %s are different. original sequence = %s'%(codon[pos_in_codon:pos_in_codon+len(deleted_base)],
+                                                                             deleted_base, codon))
+            return None
+        else:
+            new_codon=codon[:pos_in_codon]+codon[pos_in_codon+len(deleted_base):]
+        AA,rest=translate_sequence(codon)
+        if AA is not None:
+            new_AA, rest = translate_sequence(new_codon)
+            if len(rest) > 0:
+                status="FRAME_SHIFT_%s"%len(rest)
+            elif AA != new_AA:
+                status="CODING"
+                if new_AA==DNA_tools.STOP_CODON:
+                    status+="_STOP"
+            else:
+                status="SYNONYMOUS"
+            return (AA, new_AA, new_codon, status)
+        else:
+            logging.error("Codon %s does not exist. position=%s:%s strand=%s"%(codon,chr,coordinate,strand,))
+            return None
+
+
+def translate_sequence(sequence):
+    AAs=[]
+    for pos in range(0,len(sequence)-2,3):
+        aa=DNA_tools.gencode.get(sequence[pos:pos+3].upper())
+        if aa:
+            AAs.append(aa)
+        else:
+            AAs.append("X")
+    if len(sequence)%3==0:
+        rest=''
+    else:
+        rest=sequence[-(len(sequence)%3):]
+    return (''.join(AAs),rest)
+
+
+
+
+def read_line_indel_std(sp_line):
+    try:
+        pos=1
+        if len(sp_line[0].split(':'))==2:
+            chr,coordinate=sp_line[0].split(':')
+            if coordinate.isdigit():
+                coordinate=int(coordinate)
+            else:
+                logging.error("coordinate is not a number at %s"%('\t'.join(sp_line)))
+                return None
+        else:
+            pos+=1
+            chr=sp_line[0]
+            if sp_line[1].isdigit():
+                coordinate=int(sp_line[1])
+            else:
+                logging.error("coordinate is not a number at %s"%('\t'.join(sp_line)))
+                return None
+        if len(sp_line)>pos:
+            ref_base=sp_line[pos].upper()
+        else:
+            logging.error("the reference base is not provided at line %s"%('\t'.join(sp_line)))
+            return None
+            
+        if len(sp_line)>pos+1:
+            alleles=sp_line[pos+1].upper().split('/')
+        else:
+            logging.error("the indel sequence is not provided at line %s"%('\t'.join(sp_line)))
+            return None
+        final_alleles=[]
+        all_alleles={}
+        for allele in alleles:
+            if not all_alleles.has_key(allele):
+                all_alleles[allele]=1
+                if allele.startswith('+'):
+                    #insertion
+                    final_alleles.append(allele)
+                    pass
+                elif allele.startswith('-'):
+                    #deletion
+                    final_alleles.append(allele)
+                elif allele!='*':
+                    if not SNPs.is_IUPAC_code(allele):
+                        logging.error("the snv base %s in column %s is not a IUPAC code"%(allele,pos+1))
+                        return None
+                    snvs_bases=SNPs.get_nt_array_from_IUPAC(allele)
+                    if ref_base in snvs_bases:
+                        snvs_bases.remove(ref_base)
+                    final_alleles.extend(snvs_bases)
+        return (chr, coordinate, ref_base, final_alleles)
+    except Exception,e:
+        logging.exception('')
+        return None
+        
+def read_line_indel_vcf(sp_line):
+    try:
+        pos=3
+        chr=sp_line[0]
+        if sp_line[1].isdigit():
+            coordinate=int(sp_line[1])
+        else:
+            logging.error("coordinate is not a number at %s"%('\t'.join(sp_line)))
+            return None
+        if len(sp_line)>pos:
+            ref_base=sp_line[pos].upper()
+        else:
+            logging.error("the reference base is not provided at line %s"%('\t'.join(sp_line)))
+            return None
+            
+        if len(sp_line)>pos+1:
+            alleles=sp_line[pos+1].upper().split(',')
+        else:
+            logging.error("the snp/indel sequence is not provided at line %s"%('\t'.join(sp_line)))
+            return None
+        final_alleles=[]
+        for allele in alleles:
+            if len(allele)==len(ref_base):
+                #snps
+                if not SNPs.is_IUPAC_code(allele):
+                    logging.error("the snv base %s in column %s is not a IUPAC code"%(allele,pos+1))
+                    return None
+                snvs_bases=SNPs.get_nt_array_from_IUPAC(allele)
+                if ref_base in snvs_bases:
+                    snvs_bases.remove(ref_base)
+                final_alleles.extend(snvs_bases)
+            elif len(allele)>len(ref_base):
+                #insertion
+                final_alleles.append('+'+allele)
+                coordinate+=1
+            elif len(allele)<len(ref_base):
+                #deletion
+                final_alleles.append('-'+ref_base[1:])
+                ref_base=ref_base[0]
+                coordinate+=1
+        return (chr, coordinate, ref_base, final_alleles)
+    except Exception,e:
+        logging.exception('Problem loading %s'%('\t'.join(sp_line)))
+        return None
+
+def test_get_codon():
+    annotation_file='/home/tcezard/genomes/drosophila_melanogaster/dm3/annotations/flyBaseGene.txt.gz'
+    genome_file="/home/tcezard/genomes/drosophila_melanogaster/dm3/dm3.fa"
+    chr="chr2L"
+    position=10016978
+    gene_id="CG13131-RB"
+    transcript_id="CG13131-RB"
+    utils_logging.init_logging(logging.DEBUG)
+    annotation_retriver=Exon_annotation_Retriver(annotation_file=annotation_file)
+    base_annotator=Base_annotator.Base_annotator2(chr, annotation_retriver)
+    genome_loader=GenomeLoader.GenomeLoader(genome_file, keep_in_memory=False, keep_until_done=False)
+    header,chr_sequence=genome_loader.get_chr(chr)
+    codon0 = get_cdna_region(position, base_annotator, chr_sequence, gene_id, transcript_id, length=0)
+    codon1 = get_cdna_region(position, base_annotator, chr_sequence, gene_id, transcript_id, length=1)
+    codon2 = get_cdna_region(position, base_annotator, chr_sequence, gene_id, transcript_id, length=2)
+    codon3 = get_cdna_region(position, base_annotator, chr_sequence, gene_id, transcript_id, length=3)
+    codon4 = get_cdna_region(position, base_annotator, chr_sequence, gene_id, transcript_id, length=4)
+    
+    print "position =%s\tcodon=%s\tcodon=%s\tcodon=%s\tcodon=%s\tcodon=%s"%(position,codon0,codon1,codon2,codon3,codon4)
+    
+
+
+
+if __name__=="__main__":
+    test_get_codon()

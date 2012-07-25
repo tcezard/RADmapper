@@ -1,0 +1,97 @@
+#!/usr/bin/env python
+import os, glob, sys, logging
+from optparse import OptionParser
+import utils, libraryChecking
+from utils import pipeline_constant as constant
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog list_of_library_name"""
+    description = """This tool check the integrity of the given libraries.
+You can use shell wild card in the library name to create a longer list."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects"""
+    arg_pass=True
+    return arg_pass
+
+
+def checkSingleLane(libName, analysisDir, maqDir):
+    dict_map=libraryChecking.getMapInLane(libName, analysisDir)
+    for lane in dict_map.keys():
+        map=dict_map.get(lane)
+        if map:
+            try:
+                maqBin=utils.findNewestMaqVersionForMapfile(maqDir, map)
+                readLength=libraryChecking.getReadLength(maqBin, map)
+                junctionName=libraryChecking.getJunctionName(maqBin, map) 
+                if readLength is None or junctionName is None:
+                    print "\t\t%s: corrupted %s"%(lane, map)
+                else:
+                    print '\t\t%s: %s ==> %s'%(lane, readLength, junctionName)
+            except OSError, e:
+                print lane +': '+ e.args[0]
+        else:
+            print '\t\t%s: No map file'%(lane)
+
+
+def main():
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter(constant.default_log_Format))
+    logging.getLogger('').addHandler(console)
+    logging.getLogger('').setLevel(logging.NOTSET)
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    arg_pass=_verifyOption(options)
+    #TODO: these hard coded path should be remove or at least made optional
+    # if the environment variable is set.
+    analysisDir='/archive/solexa1_4/analysis/'
+    maqDir='/home/pubseq/BioSw/Maq/'
+    if len(sys.argv)>1:
+        libs=sys.argv[1:]
+        total_libs=[]
+        for lib in libs:
+            tmp_libs=glob.glob(analysisDir+lib)
+            for l in tmp_libs: total_libs.append(os.path.basename(l))
+        libs=total_libs
+    else:
+        libs=['HS0299','HS0419','HS0428','HS0445','HS0477','HS0387','HS0388','HS0293','HS0439',
+              'HS0440','HS0685','HS0476','HS0495','HS0499','HS0382','HS0502','HS0511','HS0424',
+              'HS0639','HS0644','HS0652','HS0327','HS0462','HS0463','HS0464','HS0465','HS0466',
+              'HS0467','HS0468','HS0469','HS0471','HS0371','HS0607','HS0608','HS0609','HS0610',
+              'HS0611','HS0612','HS0613','HS0614','HS0615','HS0616','HS0617','HS0626','HS0657',
+              'HS0658','HS0659','HS0660','HS0661','HS0662','HS0663','HS0664','HS0665','HS0666']
+        
+        libs=['HS0468','HS0467','HS0471','HS0469','HS0466','HS0465','HS0470','HS0704','HS0708',
+              'HS0699','HS0464','HS0463','HS0462','HS0327','HS0702','HS0703','HS0701','HS0706'] 
+
+    for libName in libs:
+        list_map=libraryChecking.checkLibrary_meta_maq(libName,analysisDir)
+        if len(list_map)>0:
+            print '%s: %s meta map file found.'%(libName,len(list_map))
+            for map in list_map:
+                try:
+                    maqBin=utils.findNewestMaqVersionForMapfile(maqDir, map)
+                    readLength=libraryChecking.getReadLength(maqBin, map)
+                    junctionName=libraryChecking.getJunctionName(maqBin, map)
+                    print '%s -- %s: %s ==> %s'%(libName,os.path.basename(map),readLength,junctionName)
+                except OSError, e:
+                    print os.path.basename(map) +': '+ e.args[0]
+                
+            
+        else :
+            print '%s: no meta map file found. nb lane =%s in %s'%(libName,libraryChecking.countLane(analysisDir+libName+'/'),analysisDir+libName+'/')
+        checkSingleLane(libName, analysisDir,maqDir)
+
+
+if __name__=="__main__" :
+    main()

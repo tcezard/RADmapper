@@ -1,0 +1,435 @@
+'''
+Created on 18 Oct 2010
+
+@author: tcezard
+'''
+from wiki_communication.wiki_ids import get_run_id_from_page_title,\
+    get_all_infos_from_solexa_page_title
+from wiki_communication import get_wiki_run
+from utils import utils_logging
+import logging
+import utils
+from optparse import OptionParser
+import sys
+
+
+oldbarcode_lookup = {'IL-PE-001':'ATCACG',
+                  'IL-PE-002':'CGATGT',
+                  'IL-PE-003':'TTAGGC',
+                  'IL-PE-004':'TGACCA',
+                  'IL-PE-005':'ACAGTG',
+                  'IL-PE-006':'GCCAAT',
+                  'IL-PE-007':'CAGATC',
+                  'IL-PE-008':'ACTTGA',
+                  'IL-PE-009':'GATCAG',
+                  'IL-PE-010':'TAGCTT',
+                  'IL-PE-011':'GGCTAC',
+                  'IL-PE-012':'CTTGTA',
+                  'phix':'TTAGGC',
+                  'SA-PE-001':'ATCACGTT',
+                  'SA-PE-002':'CGATGTTT',
+                  'SA-PE-003':'TTAGGCAT',
+                  'SA-PE-004':'TGACCACT',
+                  'SA-PE-005':'ACAGTGGT',
+                  'SA-PE-006':'GCCAATGT',
+                  'SA-PE-007':'CAGATCTG',
+                  'SA-PE-008':'ACTTGATG',
+                  'SA-PE-009':'GATCAGCG',
+                  'SA-PE-010':'TAGCTTGT',
+                  'SA-PE-011':'GGCTACAG',
+                  'SA-PE-012':'CTTGTACT',
+                  'SA-PE-013':'TGGTTGTT',
+                  'SA-PE-014':'TCTCGGTT',
+                  'SA-PE-015':'TAAGCGTT',
+                  'SA-PE-016':'TCCGTCTT',
+                  'SA-PE-017':'TGTACCTT',
+                  'SA-PE-018':'TTCTGTGT',
+                  'SA-PE-019':'TCTGCTGT',
+                  'SA-PE-020':'TTGGAGGT',
+                  'SA-PE-021':'TCGAGCGT',
+                  'SA-PE-022':'TGATACGT',
+                  'SA-PE-023':'TGCATAGT',
+                  'SA-PE-024':'TTGACTCT',}
+
+
+
+# Added TruSeq barcodes IL-TP-001 to IL-TP-048 below, 12-Jan-2012 (Were originally added as 'ILL-AD-' to match the wiki for that run. Stephen, 22-Dec-2011):
+#   Originally 'ILL-AD-...' was used on wiki page, but agreed at Solxea meeting to use 'IL-TP-' prefix, for Illumina-TruSeqPairedend-
+#   TruSeq DNA and RNA libraries use indexes 1-12.
+#   TruSeq Small RNA libraries use indexes 1-48.
+
+barcode_lookup = {'IL-PE-001':'ATCACG',
+                  'IL-PE-002':'CGATGT',
+                  'IL-PE-003':'TTAGGC',
+                  'IL-PE-004':'TGACCA',
+                  'IL-PE-005':'ACAGTG',
+                  'IL-PE-006':'GCCAAT',
+                  'IL-PE-007':'CAGATC',
+                  'IL-PE-008':'ACTTGA',
+                  'IL-PE-009':'GATCAG',
+                  'IL-PE-010':'TAGCTT',
+                  'IL-PE-011':'GGCTAC',
+                  'IL-PE-012':'CTTGTA',
+                  'phix':'TTAGGC',
+                  'IL-TP-001':'ATCACG',
+                  'IL-TP-002':'CGATGT',
+                  'IL-TP-003':'TTAGGC',
+                  'IL-TP-004':'TGACCA',
+                  'IL-TP-005':'ACAGTG',
+                  'IL-TP-006':'GCCAAT',
+                  'IL-TP-007':'CAGATC',
+                  'IL-TP-008':'ACTTGA',
+                  'IL-TP-009':'GATCAG',
+                  'IL-TP-010':'TAGCTT',
+                  'IL-TP-011':'GGCTAC',
+                  'IL-TP-012':'CTTGTA',
+                  'IL-TP-013':'AGTCAA',
+                  'IL-TP-014':'AGTTCC',
+                  'IL-TP-015':'ATGTCA',
+                  'IL-TP-016':'CCGTCC',
+                  'IL-TP-017':'GTAGAG',
+                  'IL-TP-018':'GTCCGC',
+                  'IL-TP-019':'GTGAAA',
+                  'IL-TP-020':'GTGGCC',
+                  'IL-TP-021':'GTTTCG',
+                  'IL-TP-022':'CGTACG',
+                  'IL-TP-023':'GAGTGG',
+                  'IL-TP-024':'GGTAGC',
+                  'IL-TP-025':'ACTGAT',
+                  'IL-TP-026':'ATGAGC',
+                  'IL-TP-027':'ATTCCT',
+                  'IL-TP-028':'CAAAAG',
+                  'IL-TP-029':'CAACTA',
+                  'IL-TP-030':'CACCGG',
+                  'IL-TP-031':'CACGAT',
+                  'IL-TP-032':'CACTCA',
+                  'IL-TP-033':'CAGGCG',
+                  'IL-TP-034':'CATGGC',
+                  'IL-TP-035':'CATTTT',
+                  'IL-TP-036':'CCAACA',
+                  'IL-TP-037':'CGGAAT',
+                  'IL-TP-038':'CTAGCT',
+                  'IL-TP-039':'CTATAC',
+                  'IL-TP-040':'CTCAGA',
+                  'IL-TP-041':'GACGAC',
+                  'IL-TP-042':'TAATCG',
+                  'IL-TP-043':'TACAGC',
+                  'IL-TP-044':'TATAAT',
+                  'IL-TP-045':'TCATTC',
+                  'IL-TP-046':'TCCCGA',
+                  'IL-TP-047':'TCGAAG',
+                  'IL-TP-048':'TCGGCA',
+                  'SA-PE-001':'ATCACGTT',
+                  'SA-PE-002':'CGATGTTT',
+                  'SA-PE-003':'TTAGGCAT',
+                  'SA-PE-004':'TGACCACT',
+                  'SA-PE-005':'ACAGTGGT',
+                  'SA-PE-006':'GCCAATGT',
+                  'SA-PE-007':'CAGATCTG',
+                  'SA-PE-008':'ACTTGATG',
+                  'SA-PE-009':'GATCAGCG',
+                  'SA-PE-010':'TAGCTTGT',
+                  'SA-PE-011':'GGCTACAG',
+                  'SA-PE-012':'CTTGTACT',
+                  'SA-PE-013':'TGGTTGTT',
+                  'SA-PE-014':'TCTCGGTT',
+                  'SA-PE-015':'TAAGCGTT',
+                  'SA-PE-016':'TCCGTCTT',
+                  'SA-PE-017':'TGTACCTT',
+                  'SA-PE-018':'TTCTGTGT',
+                  'SA-PE-019':'TCTGCTGT',
+                  'SA-PE-020':'TTGGAGGT',
+                  'SA-PE-021':'TCGAGCGT',
+                  'SA-PE-022':'TGATACGT',
+                  'SA-PE-023':'TGCATAGT',
+                  'SA-PE-024':'TTGACTCT',
+                  'SA-PE-025':'TGCGATCT',
+                  'SA-PE-026':'TTCCTGCT',
+                  'SA-PE-027':'TAGTGACT',
+                  'SA-PE-028':'TACAGGAT',
+                  'SA-PE-029':'TCCTCAAT',
+                  'SA-PE-030':'TGTGGTTG',
+                  'SA-PE-031':'TAGTCTTG',
+                  'SA-PE-032':'TTCCATTG',
+                  'SA-PE-033':'TCGAAGTG',
+                  'SA-PE-034':'TAACGCTG',
+                  'SA-PE-035':'TTGGTATG',
+                  'SA-PE-036':'TGAACTGG',
+                  'SA-PE-037':'TACTTCGG',
+                  'SA-PE-038':'TCTCACGG',
+                  'SA-PE-039':'TCAGGAGG',
+                  'SA-PE-040':'TAAGTTCG',
+                  'SA-PE-041':'TCCAGTCG',
+                  'SA-PE-042':'TGTATGCG',
+                  'SA-PE-043':'TCATTGAG',
+                  'SA-PE-044':'TGGCTCAG',
+                  'SA-PE-045':'TATGCCAG',
+                  'SA-PE-046':'TCAGATTC',
+                  'SA-PE-047':'TACTAGTC',
+                  'SA-PE-048':'TTCAGCTC',
+                  'SA-PE-049':'TGTCTATC',
+                  'SA-PE-050':'TATGTGGC',
+                  'SA-PE-051':'TTACTCGC',
+                  'SA-PE-052':'TCGTTAGC',
+                  'SA-PE-053':'TACCGAGC',
+                  'SA-PE-054':'TGTTCTCC',
+                  'SA-PE-055':'TTCGCACC',
+                  'SA-PE-056':'TTGCGTAC',
+                  'SA-PE-057':'TCTACGAC',
+                  'SA-PE-058':'TGACAGAC',
+                  'SA-PE-059':'TAGAACAC',
+                  'SA-PE-060':'TCATCCTA',
+                  'SA-PE-061':'TGCTGATA',
+                  'SA-PE-062':'TAGACGGA',
+                  'SA-PE-063':'TGTGAAGA',
+                  'SA-PE-064':'TCTCTTCA',
+                  'SA-PE-065':'TTGTTCCA',
+                  'SA-PE-066':'TGAAGCCA',
+                  'SA-PE-067':'TACCACCA',
+                  'SA-PE-068':'TGCGTGAA',
+                  'SA-PE-069':'GGTGAGTT',
+                  'SA-PE-070':'GATCTCTT',
+                  'SA-PE-071':'GTGTCCTT',
+                  'SA-PE-072':'GACGGATT',
+                  'SA-PE-073':'GCAACATT',
+                  'SA-PE-074':'GGTCGTGT',
+                  'SA-PE-075':'GAATCTGT',
+                  'SA-PE-076':'GTACATCT',
+                  'SA-PE-077':'GAGGTGCT',
+                  'SA-PE-078':'GCATGGCT',
+                  'SA-PE-079':'GTTAGCCT',
+                  'SA-PE-080':'GTCGCTAT',
+                  'SA-PE-081':'GGAATGAT',
+                  'SA-PE-082':'GAGCCAAT',
+                  'SA-PE-083':'GCTCCTTG',
+                  'SA-PE-084':'GTAAGGTG',
+                  'SA-PE-085':'GAGGATGG',
+                  'SA-PE-086':'GTTGTCGG',
+                  'SA-PE-087':'GGATTAGG',
+                  'SA-PE-088':'GATAGAGG',
+                  'SA-PE-089':'GTGTGTCG',
+                  'SA-PE-090':'GCAATCCG',
+                  'SA-PE-091':'GACCTTAG',
+                  'SA-PE-092':'GCCTGTTC',
+                  'SA-PE-093':'GCACTGTC',
+                  'SA-PE-094':'GCTAACTC',
+                  'SA-PE-095':'GATTCATC',
+                  'SA-PE-096':'GTCTTGGC'}
+
+barcode_to_avoid_lookup={'RD-P1-000':'XXXXX',
+                        'RD-P1-001':'AAAAA',
+                        'RD-P1-002':'ACCAT',
+                        'RD-P1-003':'AGGAC',
+                        'RD-P1-004':'ATATC',
+                        'RD-P1-005':'CGATA',
+                        'RD-P1-006':'CTAGG',
+                        'RD-P1-007':'CTGAA',
+                        'RD-P1-008':'CGCGC',
+                        'RD-P1-009':'GAAGC',
+                        'RD-P1-010':'GCTAA',
+                        'RD-P1-011':'GGCCT',
+                        'RD-P1-012':'GTCAC',
+                        'RD-P1-013':'TAGCA',
+                        'RD-P1-014':'TCCTC',
+                        'RD-P1-015':'TGTGG',
+                        'RD-P1-016':'TTAAT',
+                        'RD-P1-017':'AACCC',
+                        'RD-P1-018':'ACGTA',
+                        'RD-P1-019':'ATTAG',
+                        'RD-P1-020':'AGAGT',
+                        'RD-P1-021':'CCAAC',
+                        'RD-P1-022':'CGTAT',
+                        'RD-P1-023':'CTCTT',
+                        'RD-P1-024':'CCTTG',
+                        'RD-P1-025':'GACTA',
+                        'RD-P1-026':'GCGCC',
+                        'RD-P1-027':'GGAAG',
+                        'RD-P1-028':'GTTGT',
+                        'RD-P1-029':'TACGT',
+                        'RD-P1-030':'TCGAG',
+                        'RD-P1-031':'TGACC',
+                        'RD-P1-032':'TTTTA',
+                        'RD-P1-033':'AAGGG',
+                        'RD-P1-034':'ACTGC',
+                        'RD-P1-035':'ATCGA',
+                        'RD-P1-036':'ACACG',
+                        'RD-P1-037':'CAACT',
+                        'RD-P1-038':'CCCCA',
+                        'RD-P1-039':'CAGTC',
+                        'RD-P1-040':'CGGCG',
+                        'RD-P1-041':'GATCG',
+                        'RD-P1-042':'GGGGA',
+                        'RD-P1-043':'GCATT',
+                        'RD-P1-044':'GGTTC',
+                        'RD-P1-045':'TATAC',
+                        'RD-P1-046':'TCAGA',
+                        'RD-P1-047':'TGGTT',
+                        'RD-P1-048':'TTCCG',
+                        'RD-P1-049':'AATTT',
+                        'RD-P1-050':'ATGCT',
+                        'RD-P1-051':'AGCTG',
+                        'RD-P1-052':'AGTCA',
+                        'RD-P1-053':'CTTCC',
+                        'RD-P1-054':'CATGA',
+                        'RD-P1-055':'CCGGT',
+                        'RD-P1-056':'CACAG',
+                        'RD-P1-057':'GAGAT',
+                        'RD-P1-058':'GCCGG',
+                        'RD-P1-059':'GTGTG',
+                        'RD-P1-060':'GTACA',
+                        'RD-P1-061':'TAATG',
+                        'RD-P1-062':'TCTCT',
+                        'RD-P1-063':'TGCAA',
+                        'RD-P1-064':'TTGGC'
+}
+
+
+
+def get_sample_sheet_from_wiki(run_title, output_file,casava17=False, force=False):
+    sep=','
+    run_id = get_run_id_from_page_title(run_title)
+    date, machine_name, number, flowcell = get_all_infos_from_solexa_page_title(run_title)
+    run = get_wiki_run(run_id)
+    headers=['FCID', 'Lane', 'SampleID', 'SampleRef',
+            'Index', 'Description', 'Control', 'Recipe', 'Operator', 'SampleProject']  # added 'SampleProject' column for Casava 1.8+ (Stephen, 12-Oct-2011)
+    if casava17:
+        headers=['FCID', 'Lane', 'SampleID', 'SampleRef',
+            'Index', 'Description', 'Control', 'Recipe', 'Operator'] 
+    sample_sheet_text=[]
+    missing_lanes=0
+    for lane in run.get_lanes():
+        elements = lane.get_run_elemt()
+        sample_str=''.join(lane.get_sample_str().split()).lower().strip()
+        if elements and len(elements)>1 and sample_str.find('phix')<0:
+            no_demutliplex=False
+            for run_element in elements:
+                if barcode_to_avoid_lookup.get(run_element.get_index()):
+                    no_demutliplex=True
+                    continue
+                if run_element.get_index()!='unassigned':
+                    out = [] 
+                    out.append(flowcell)
+                    out.append(str(lane.get_lane_number()))
+                    out.append(run_element.get_sample().id)
+                    out.append('XXX')
+                    
+                    barcode_sequence = barcode_lookup.get(run_element.get_index())
+                    if barcode_sequence is not None:
+                        out.append(barcode_lookup.get(run_element.get_index()))
+                    else:
+                        out.append('')
+                    out.append('%s'%(run_element.get_index()))
+                    out.append('N')
+                    out.append('R')
+                    out.append('M Thomson')
+                    if not casava17:
+                        out.append(run_element.get_project().id)
+                    sample_sheet_text.append(sep.join(out))
+            if no_demutliplex:
+                logging.warning('indexed lane %s --%s with barcode id to avoid set as a whole lane in sample sheet'%(lane.get_lane_number(), sample_str))
+                out = [] 
+                out.append(flowcell)
+                out.append(str(lane.get_lane_number()))
+                out.append(''.join(lane.get_sample_str().split()).strip())
+                out.append('XXX')
+                out.append('GGGGGGGG')
+                out.append('GGGGGGGG')
+                out.append('N')
+                out.append('R')
+                out.append('M Thomson')
+                if not casava17:
+                    out.append(lane.get_project_str())
+                sample_sheet_text.append(sep.join(out))
+        elif elements and len(elements)==1 and sample_str.find('phix')<0:
+            logging.warning('lane %s with sample %s is not indexed: Skipped'%(lane.get_lane_number(), sample_str))
+        else:
+            if sample_str.find('phix') >= 0:
+                out = [] 
+                out.append(flowcell)
+                out.append(str(lane.get_lane_number()))
+                out.append('PhiX')
+                out.append('XXX')
+                out.append(barcode_lookup.get('phix'))
+                out.append('IL-PE-003')
+                out.append('Y')
+                out.append('R')
+                out.append('M Thomson')
+                if not casava17:
+                    out.append('PhixControlProject')
+                sample_sheet_text.append(sep.join(out))
+            else:
+                logging.critical('Sample %s is not recognised in project %s'%(lane.get_sample_str().strip(),
+                                                                           lane.get_project_str().strip()))
+                missing_lanes+=1
+    if missing_lanes>0 and not force:
+        if missing_lanes>1:
+            logging.critical("%s lanes are missing data. Do not create samplesheet. Use force to override."%missing_lanes)
+        else:
+            logging.critical("%s lane is missing data. Do not create samplesheet. Use force to override."%missing_lanes)
+        sys.exit(1)
+        
+    open_output= utils_logging.open_output_file(output_file, pipe=True)
+    open_output.write(sep.join(headers)+'\n')
+    open_output.write('\n'.join(sample_sheet_text))
+    open_output.close()
+            
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    if options.debug:
+        utils_logging.init_logging(logging.DEBUG)
+    get_sample_sheet_from_wiki(options.run_title, options.output_file, options.casava17,force = options.force)
+    sys.exit(0)
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-r page_title>"""
+    description = """This script gets information from the wiki."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-r","--run_title",dest="run_title",type="string",
+                         help="The run title as specified on the wiki. Default: %default")
+    optparser.add_option("-o","--output_file",dest="output_file",type="string",
+                         help="The file where the sample sheet will be output. Default: %default")
+    optparser.add_option("--casava17",dest="casava17",action="store_true",default=False,
+                         help="Set the script to generate sample sheet valid for casava 1.7 or before. Default: %default")
+    optparser.add_option("-f","--force",dest="force",action="store_true",default=False,
+                         help="Force the script to output the sample sheet even if some information is missing. Default: %default")
+    optparser.add_option("--debug",dest="debug",action="store_true",default=False,
+                         help="This flag set the script to display the debug options. Default: %default")
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    # Test output_file
+    if not options.output_file:
+        logging.error("You must specify an output file.")
+        arg_pass=False
+    if not options.run_title:
+        logging.error("You must specify a run title.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()
+        

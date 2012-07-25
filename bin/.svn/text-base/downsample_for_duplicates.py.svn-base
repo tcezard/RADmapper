@@ -1,0 +1,110 @@
+'''
+Created on 28 Jun 2010
+
+@author: tcezard
+'''
+import logging
+import os
+import command_runner
+import run_BWA_commands
+import glob
+from get_data_from_seqarchive import get_data_from_seqarchive
+import utils
+from optparse import OptionParser
+from utils import utils_logging, longest_common_substr_from_start, utils_param
+import sys
+from wiki_communication import get_wiki_project
+from pipeline_directory_structure import create_directory_structure
+from run_BWA_commands import check_genome_index
+from utils.utils_param import get_pipeline_places
+from utils.parameters import Config_file_error
+from remove_duplicate_from_bam import remove_duplicate
+
+
+
+def downsample_for_duplicates(bam_file,probability, output_dir):
+    try:
+        pipeline_param=utils_param.get_pipeline_parameters()
+        samtools_dir=pipeline_param.get_samtools_dir()
+        picard_dir=pipeline_param.get_picard_dir()
+    except Config_file_error, e:
+        logging.exception('Config_file_error:')
+        picard_dir=None
+        sys.exit(5)
+    downsample_jar = os.path.join(picard_dir,"DownsampleSam.jar")
+    name, ext = os.path.splitext(bam_file)
+    output_bam_file='%s_%s.bam'%(name,probability)
+    if output_dir:
+        output_bam_file=os.path.join(output_dir,'%s_%s.bam'%(os.path.basename(name),probability))
+    command = 'java -Xmx2G -jar %s I=%s O=%s P=%s VALIDATION_STRINGENCY=SILENT'%(downsample_jar, bam_file, output_bam_file, probability)
+    return_code = command_runner.run_command(command)
+    if return_code == 0 :
+        return_code = remove_duplicate(output_bam_file, sorted=True, overwrite=True)
+    if return_code is True:
+        name, ext = os.path.splitext(output_bam_file)
+        output_duplicate= name+'_mrk_dup.bam'
+        samtools_bin=os.path.join(samtools_dir,'samtools')
+        command="%s flagstat %s > %s.stat"%(samtools_bin,output_duplicate,output_duplicate)
+        return_code = command_runner.run_command(command)
+    return return_code
+    
+    
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    command_runner.set_command_to_run_localy()
+    
+    return_code = downsample_for_duplicates(options.bam_file, options.probability, options.output_dir)
+    sys.exit(return_code)
+    
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog -b <bam_file> -p <probability>"""
+    description = """This Script downsample a bam file and mark duplicates after that."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-b","--bam_file",dest="bam_file",type="string",
+                         help="The bam file to downsample.")
+    optparser.add_option("-p","--probability",dest="probability",type="string",
+                         help="The probability of a read pair to be downsample.")
+    optparser.add_option("-o","--output_dir",dest="output_dir",type="string",
+                         help="The directory in which the subsample file will be output.")
+    
+    
+    
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.bam_file:
+        logging.error("You must specify an input bam file with -b.")
+        arg_pass=False
+    if not options.probability:
+        logging.error("You must specify a probability with -p.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

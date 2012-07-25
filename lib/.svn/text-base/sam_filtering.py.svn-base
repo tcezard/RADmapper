@@ -1,0 +1,156 @@
+'''
+Created on Aug 24, 2009
+
+@author: tcezard
+'''
+#!/usr/bin/env python
+import os, sys, logging, re
+from optparse import OptionParser
+import utils
+from utils import utils_logging
+
+def pass_mapping_quality(sp_line, mapping_quality_thr):
+    """return true if the mapping quality is greater or equal to the threshold return false otherwise."""
+    return int(sp_line[4])>=mapping_quality_thr
+
+def pass_number_mismatches(sp_line, nb_mismatches_thr):
+    """return true if the number of mismatches is lower or equal to the threshold or 
+    if the number of mismatches is not reported return false otherwise."""
+    n_mismatch=0
+    for flag in sp_line[11:]:
+        if flag.startswith("NM"):
+            #NM:i:7
+            sp_flag=flag.split(':')
+            if sp_flag[1]=="i":
+                n_mismatch=int(sp_flag[2])
+            else:
+                logging.error("Unsupported format for %s"%flag)
+    return n_mismatch<=nb_mismatches_thr
+
+def pass_percent_mismatches(sp_line, percent_mismatches_thr):
+    return
+    n_mismatch=0
+    for flag in sp_line[11:]:
+        if flag.startswith("NM"):
+            #NM:i:7
+            sp_flag=flag.split(':')
+            if sp_flag[1]=="i":
+                n_mismatch=int(sp_flag[2])
+            else:
+                logging.error("Unsupported format for %s"%flag)
+    return n_mismatch<=percent_mismatches_thr
+
+def pass_junction_over_hang(sp_line, over_hang_thr):
+    """return true if the junction over-hang is greater or equal to the threshold return false otherwise.
+    return true if it's not recognized as a junction."""
+    sp_cigar=re.findall("[0-9]+[MIDNSHP]",sp_line[5])
+    if sp_cigar and len(sp_cigar)==3 and sp_cigar[1][-1]=='N':
+        # A junction as 3 element and the code of the second element is N
+        if int(sp_cigar[0][:-1])<over_hang_thr or int(sp_cigar[2][:-1])<over_hang_thr :
+            return False
+    return True
+    
+    
+def filter(open_input, open_output, mapping_quality_thr=None, mismatches_thr=None,over_hang_thr=None):
+    """This script take an open sam stream and output to an open sam stream. it filters the reads based on the given parameters.
+     If None is given for a specific parameter the filter will be turned off otherwise it's on.
+     See specific function for filtering description.
+     @see: pass_mapping_quality
+     @see: pass_number_mismatches
+     @see: pass_junction_over_hang"""
+    filter_functions=[]
+    filtering_results=[]
+    filtering_names=[]
+    read_kept=0
+    if mapping_quality_thr:
+        filter_functions.append((pass_mapping_quality,int(mapping_quality_thr)))
+        filtering_results.append(0)
+        filtering_names.append("mapping_quality")
+    if mismatches_thr:
+        filter_functions.append((pass_number_mismatches,int(mismatches_thr)))
+        filtering_results.append(0)
+        filtering_names.append("number_mismatches")
+    if over_hang_thr:
+        filter_functions.append((pass_junction_over_hang,int(over_hang_thr)))
+        filtering_results.append(0)
+        filtering_names.append("junction_over_hang")
+    for line in open_input:
+        sp_line=line.split()
+        filter_pass=True
+        for i, (function ,threshold) in enumerate(filter_functions):
+            #print "filter %s of %s on %s"%(filtering_names[i],threshold, line)
+            if not function(sp_line,threshold):
+                filtering_results[i]+=1;
+                filter_pass=False
+                break
+        if filter_pass:
+            read_kept+=1
+            open_output.write(line)
+        #print filter_pass
+        #sys.exit()
+    
+    for i, name in enumerate(filtering_names):
+        logging.info("%s reads filtered by %s"%(filtering_results[i],name))
+    logging.info("%s reads kept"%(read_kept))
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging()
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    open_input=utils_logging.open_input_file(options.input_sam)
+    open_output=utils_logging.open_output_file(options.output_sam)
+    filter(open_input, open_output, options.mapping_qual_thres, options.mismatches,options.overhang)
+    open_input.close()
+    open_output.close()
+    
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script can filter a sam input on several different criteria."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-i","--input",dest="input_sam",type="string",
+                         help="Path to a file where the input data are. PIPE can be used to specify that the data will be piped. Default: %default")
+    optparser.add_option("-o","--output",dest="output_sam",type="string",
+                         help="Path to a file where the results will be output.PIPE can be used to specify that the data will be piped in stdout. Default: %default")
+    optparser.add_option("-q","--quality",dest="mapping_qual_thres",type="int",default=10,
+                         help="The mapping quality threshold used select the reads. Default: %default")
+    optparser.add_option("-m","--mismatch",dest="mismatches",type="int",
+                         help="The number of mismatches threshold used select the reads. Default: %default")
+    optparser.add_option("-k","--overhang",dest="overhang",type="int",
+                         help="The number bases required to hang over the junction. Default: %default")
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    # Test output_file
+    if not options.input_sam:
+        logging.error("You must specify an input file in sam format or PIPE.")
+        arg_pass=False
+    if not options.output_sam:
+        logging.error("You must specify an output file path or PIPE.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

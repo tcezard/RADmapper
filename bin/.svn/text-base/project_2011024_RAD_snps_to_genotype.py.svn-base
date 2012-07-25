@@ -1,0 +1,102 @@
+'''
+Created on Mar 9, 2011
+
+@author: tcezard
+'''
+from utils import utils_logging
+from IO_interface import vcfIO
+import sys, os
+import pprint
+
+
+def generate_empty_hash_with_sample(all_samples):
+    hash={}
+    for sample in all_samples:
+        hash[sample]='.'
+    return hash
+
+def vcf_to_genotype(vcf_file, all=False):
+    
+    mandatory_list_sample1=['Br5male', 'Br5female']
+    mandatory_list_sample2=['Br6male', 'Br6female']
+    file_handle = utils_logging.open_input_file(vcf_file, pipe=False)
+    reader  = vcfIO.VcfReader(file_handle)
+    all_samples_in_file = ['Br5male', 'Br5female', 'Br5-01', 'Br5-02', 'Br5-03', 'Br5-04', 'Br5-05', 'Br5-06', 'Br5-07', 'Br5-08', 'Br5-09', 'Br5-10', 'Br5-11', 
+                           'Br5-12', 'Br5-13', 'Br5-14', 'Br5-15', 'Br5-16', 'Br5-17', 'Br5-18', 'Br5-19', 'Br5-20', 'Br5-21', 'Br5-22', 'Br5-23', 'Br5-24', 
+                           'Br5-25', 'Br5-26', 'Br5-27', 'Br5-28', 'Br5-29', 'Br5-30', 'Br5-31', 'Br5-32', 'Br5-33', 'Br5-34', 'Br5-35', 'Br5-36', 'Br5-37', 
+                           'Br5-38', 'Br5-39', 'Br5-40', 'Br5-41', 'Br5-42', 'Br5-43', 'Br5-44', 'Br5-45', 'Br5-46', 'Br6male', 'Br6female', 'Br6-01', 'Br6-02',
+                           'Br6-03', 'Br6-04', 'Br6-05', 'Br6-06', 'Br6-07', 'Br6-08', 'Br6-09', 'Br6-10', 'Br6-11', 'Br6-12', 'Br6-13', 'Br6-14', 'Br6-15', 
+                           'Br6-16', 'Br6-17', 'Br6-18', 'Br6-19', 'Br6-20', 'Br6-21', 'Br6-22', 'Br6-23', 'Br6-24', 'Br6-25', 'Br6-26', 'Br6-27', 'Br6-28',
+                           'Br6-29', 'Br6-30', 'Br6-31', 'Br6-32', 'Br6-33', 'Br6-34', 'Br6-35', 'Br6-36', 'Br6-37', 'Br6-38', 'Br6-39', 'Br6-40', 'Br6-41', 
+                           'Br6-42', 'Br6-43', 'Br6-44', 'Br6-45', 'Br6-46']
+    #all_samples_in_file=reader.get_sample_names()
+    print '#chr\tpos\tal1\tal2\t%s'%('\t'.join(all_samples_in_file))
+    for vcf_records in reader:
+        #First check that the parent are callable
+        genotypes1 = vcf_records.get_valid_genotype_per_sample(genotype_quality_threshold=20, minimum_depth=6, sample_list=mandatory_list_sample1)
+        genotypes2 = vcf_records.get_valid_genotype_per_sample(genotype_quality_threshold=20, minimum_depth=6, sample_list=mandatory_list_sample2)
+        keep=False
+        #print vcf_records.get_reference(),vcf_records.get_position()
+        if len(genotypes1)>0:
+            all_gen=set()
+            all_samples=[]
+            for genotype in genotypes1.keys():
+                all_gen.update(set(genotype.split('/')))
+                all_samples.extend(genotypes1.get(genotype))
+            if len(all_gen)>1 and len(all_samples)==len(mandatory_list_sample1):
+                keep=True
+        if len(genotypes2)>0:
+            all_gen=set()
+            all_samples=[]
+            for genotype in genotypes2.keys():
+                all_gen.update(set(genotype.split('/')))
+                all_samples.extend(genotypes2.get(genotype))
+            if len(all_gen)>1 and len(all_samples)==len(mandatory_list_sample2):
+                keep=True
+        
+        if keep:
+            ref_base = vcf_records.get_reference_base()
+            alt_bases = vcf_records.get_alt_bases()
+            if len(alt_bases)>1:
+                continue
+            else:
+                alt_base=alt_bases[0]
+            if not all:
+                genotypes_all = vcf_records.get_valid_genotype_per_sample(genotype_quality_threshold=20, minimum_depth=6)
+                samples2genotype = generate_empty_hash_with_sample(all_samples_in_file)
+                
+                for genotype in genotypes_all:
+                    sample_list = genotypes_all.get(genotype)
+                    #genotype_str = genotype.replace('0', ref_base).replace('1', alt_base)
+                    genotype_str = genotype
+                    
+                    for sample in sample_list:
+                        samples2genotype[sample] = genotype_str
+                out=[]
+                out.append(vcf_records.get_reference())
+                out.append(str(vcf_records.get_position()))
+                out.append(ref_base)
+                out.append(alt_base)
+                for sample in all_samples_in_file:
+                    out.append(samples2genotype.get(sample))
+                print '\t'.join(out)
+            else:
+                all_genotypes=vcf_records.get_all_genotype(all_samples_in_file)
+                all_genotype_quals=vcf_records.get_all_genotype_quality(all_samples_in_file)
+                all_sample_depth=vcf_records.get_all_sample_depth(all_samples_in_file)
+                out=[]
+                out.append(vcf_records.get_reference())
+                out.append(str(vcf_records.get_position()))
+                out.append(ref_base)
+                out.append(alt_base)
+                for i in range(len(all_genotypes)):
+                    #genotype_str = all_genotypes[i].replace('0', ref_base).replace('1', alt_base)
+                    genotype_str = all_genotypes[i]
+                    out.append('%s:%s:%s'%(genotype_str,all_genotype_quals[i],all_sample_depth[i]))
+                print '\t'.join(out)
+
+if __name__=="__main__":
+    input_file = sys.argv[1]
+    if len(sys.argv)>2: all=True
+    else: all=False
+    vcf_to_genotype(input_file,all)

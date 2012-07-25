@@ -1,0 +1,50 @@
+# -*- coding: utf-8 -*-
+'''
+Created on 18 July 2011
+@author: tcezard
+'''
+import sys, os, logging
+from IO_interface import vcfIO
+
+            
+if __name__=='__main__':
+    """Get the snps present in SS1 and SS3 but not in SS4"""
+    samples_FER=['FER_01','FER_02','FER_03','FER_04','FER_05']
+    samples_GIL=['GIL_07','GIL_08','GIL_09','GIL_10','GIL_18']
+    samples_SON=['SON_11','SON_12','SON_15','SON_16','SON_17']
+    input_file=sys.argv[1]
+    output_file_FER=sys.argv[2]
+    output_file_GIL=sys.argv[3]
+    output_file_SON=sys.argv[4]
+    min_numb_individual=int(sys.argv[5])
+    
+    open_output_file_FER=open(os.path.abspath(output_file_FER), 'w')
+    open_output_file_GIL=open(os.path.abspath(output_file_GIL), 'w')
+    open_output_file_SON=open(os.path.abspath(output_file_SON), 'w')
+    open_input = open(input_file)
+    reader = vcfIO.VcfReader(open_input)
+    open_output_file_FER.write(reader.get_header_lines()+'\n')
+    open_output_file_GIL.write(reader.get_header_lines()+'\n')
+    open_output_file_SON.write(reader.get_header_lines()+'\n')
+    for record in reader:
+        valid_genotype_FER = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=samples_FER)
+        valid_genotype_GIL = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=samples_GIL)
+        valid_genotype_SON = record.get_valid_genotype_per_sample(genotype_quality_threshold=20, sample_list=samples_SON)
+        #print valid_genotype_FER
+        #print valid_genotype_GIL
+        #print valid_genotype_SON
+        if len(valid_genotype_FER.keys())==1 and len(valid_genotype_GIL.keys())==1 and len(valid_genotype_SON.keys())==1 and \
+         len(valid_genotype_FER.values()[0])>=min_numb_individual and len(valid_genotype_GIL.values()[0])>=min_numb_individual\
+         and len(valid_genotype_SON.values()[0])>=min_numb_individual:
+            set_FER = set(valid_genotype_FER.keys()[0].split('/'))
+            set_GIL = set(valid_genotype_GIL.keys()[0].split('/'))
+            set_SON = set(valid_genotype_SON.keys()[0].split('/'))
+            if set_FER != set_GIL and set_FER != set_SON:
+                open_output_file_FER.write(str(record)+'\n')
+            if set_GIL != set_FER and set_GIL != set_SON:
+                open_output_file_GIL.write(str(record)+'\n')
+            if set_SON != set_FER and set_SON != set_GIL:
+                open_output_file_SON.write(str(record)+'\n')
+    open_output_file_FER.close()
+    open_output_file_GIL.close()
+    open_output_file_SON.close()

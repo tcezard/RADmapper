@@ -1,0 +1,159 @@
+#!/usr/bin/env python
+'''
+Created on 4 Feb 2010
+
+@author: tcezard
+'''
+import os, sys, logging
+from optparse import OptionParser
+import utils
+from utils import utils_param, utils_logging, compare_version_number,\
+    get_bwa_version, longest_common_substr_from_start
+import command_runner
+from utils.GenomeLoader import GenomeLoader
+from utils.parameters import Config_file_error
+
+
+
+    
+def get_stats_from_bam(bam_files, wiki_style=False):
+    run_fine=True
+    try:
+        pipeline_param=utils_param.get_pipeline_parameters()
+        samtools_dir=pipeline_param.get_samtools_dir()
+    except Config_file_error, e:
+        logging.warning("You'll need to have samtools in your path")
+        samtools_dir=''
+    samtools_bin=os.path.join(samtools_dir,'samtools ')
+    bam_stat_files=[]
+    all_processes=[]
+    for bam_file in bam_files:
+        if os.path.exists(bam_file+".stat"):
+            bam_stat_files.append(bam_file+".stat")
+        else:
+            command='%s flagstat %s > %s'%(samtools_bin,bam_file,bam_file+".stat")
+            process = command_runner.run_command_no_wait(command)
+            all_processes.append(process)
+            bam_stat_files.append(bam_file+".stat")
+    for process in all_processes:
+        return_code=process.wait()
+    if wiki_style:
+        print "|| File || Nb of reads || Nb mapped reads || % mapped reads || Nb duplicate reads || % duplicate reads || Nb propely mapped reads || % properly mapped reads || "
+        for bam_stat_file in bam_stat_files:
+            (total,duplicates,mapped,properly_paired)= parse_stat_file(bam_stat_file)
+            out=[bam_stat_file, str(total), str(mapped)]
+            if float(total)>0: out.append('%.2f%%'%(float(mapped)/float(total)*100))
+            else: out.append('nan')
+            out.append(str(duplicates))
+            if float(total)>0: out.append('%.2f%%'%(float(duplicates)/float(mapped)*100))
+            else: out.append('nan')
+            out.append(str(properly_paired))
+            if float(total)>0: out.append('%.2f%%'%(float(properly_paired)/float(total)*100))
+            else: out.append('nan')
+            print "|%s|"%(" | ".join(out))
+    else:
+        for bam_stat_file in bam_stat_files:
+            (total,duplicates,mapped,properly_paired)= parse_stat_file(bam_stat_file)
+            print " ".join([bam_stat_file, str(total), str(mapped), str(duplicates), str(properly_paired)])
+    
+def parse_stat_file(stat_file):
+    """2045760 + 0 in total (QC-passed reads + QC-failed reads)
+14254 + 0 duplicates
+2023093 + 0 mapped (98.89%:-nan%)
+2045760 + 0 paired in sequencing
+1022880 + 0 read1
+1022880 + 0 read2
+1992770 + 0 properly paired (97.41%:-nan%)
+2011871 + 0 with itself and mate mapped
+11222 + 0 singletons (0.55%:-nan%)
+17290 + 0 with mate mapped to a different chr
+15268 + 0 with mate mapped to a different chr (mapQ>=5)
+"""
+    open_file = utils_logging.open_input_file(stat_file,pipe=False)
+    line_number=0
+    total=0
+    duplicates=0
+    mapped=0
+    properly_paired=0
+    
+    for line in open_file:
+        line_number+=1
+        if line_number==1:
+            total = int(line.split()[0])
+        elif line_number==2:
+            duplicates = int(line.split()[0])
+        elif line_number==3:
+            mapped = int(line.split()[0])
+        elif line_number==4:
+            dummy = int(line.split()[0])
+        elif line_number==5:
+            dummy = int(line.split()[0])
+        elif line_number==6:
+            dummy = int(line.split()[0])
+        elif line_number==7:
+            properly_paired = int(line.split()[0])
+        elif line_number==8:
+            dummy = int(line.split()[0])
+        elif line_number==9:
+            dummy = int(line.split()[0])
+        elif line_number==10:
+            dummy = int(line.split()[0])
+        elif line_number==11:
+            dummy = int(line.split()[0])
+    return (total,duplicates,mapped,properly_paired)
+        
+            
+    open_file.close()
+
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging()
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    command_runner.set_command_to_run_localy()
+    bam_files=[options.bam_file]
+    bam_files.extend(args)
+    get_stats_from_bam(bam_files, options.wiki_style)
+        
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog -b bam_file [bam_file2]"""
+    description = """This script will get some stats from the bam files"""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-b","--bam_file",dest="bam_file",type="string",
+                         help="Path to one or many bam files. This file is mandatory. Default: %default")
+    optparser.add_option("-w","--wiki",dest="wiki_style",action="store_true",default=False,
+                         help="Set the script to output a wiki table. Default: %default")
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.bam_file :
+        logging.error("You must specify a bam file with -b.")
+        arg_pass=False
+    elif not os.path.exists(options.bam_file):
+        logging.error("bam file %s not found. You must specify an existing bam file."%options.bam_file)
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

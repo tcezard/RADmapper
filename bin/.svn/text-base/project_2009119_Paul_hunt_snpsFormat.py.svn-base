@@ -1,0 +1,155 @@
+'''
+Created on 1 Mar 2010
+
+@author: tcezard
+'''
+import SNPs
+import logging
+from utils.FastaFormat import FastaReader
+from utils import utils_logging
+
+
+#chab01  654     C       8       G       A:0:0     C:0:0     G:8:0     T:0:0
+#chab01  911     C       48      T       A:0:0     C:0:0     G:0:0     T:48:2
+#gi|9626372|ref|NC_001422.1|     1301    G       A       AG      1375    A:803:50        T:0:0   C:0:0   G:572:12
+
+def read_frequency_file(input_file):
+    data_per_chr={}
+    header=True
+    skip_header=0
+    open_input=utils_logging.open_input_file(input_file,pipe=False)
+    for line in open_input:
+        ##Skip header line
+        sp_line=line.strip().split()
+        if header and not sp_line[1].isdigit():
+            skip_header+=1
+            continue
+        header=False
+        if data_per_chr.get(sp_line[0]) is None:
+            data_per_chr[sp_line[0]]={}
+        ref_base=sp_line[2]
+        seen_bases=SNPs.get_nt_array_from_IUPAC(sp_line[3])
+        if ref_base in seen_bases:
+            seen_bases.remove(ref_base)
+        if len(seen_bases)==1:
+            snp_base=seen_bases[0]
+        elif len(seen_bases)>0:
+            logging.warning('More than 1 non ref base seen at %s use %s'%(line,seen_bases[0]))
+            snp_base=seen_bases[0]
+        else:
+            logging.warning('No snps seens at %s'%(line))
+            continue
+        coverage_high=0
+        coverage_low=0
+        #get frequency
+        for elmt in sp_line[-4:]:
+            #A:0:0     C:0:0     G:8:0     T:0:0
+            base,freq,freq_low=elmt.split(':')
+            coverage_high+=int(freq)
+            coverage_low+=int(freq_low)
+            if base==ref_base:
+                ref_base_freq=int(freq)
+                ref_base_freq_low=int(freq_low)
+            if base==snp_base:
+                snp_base_freq=int(freq)
+                snp_base_freq_low=int(freq_low)
+
+        data_per_chr[sp_line[0]][int(sp_line[1])]=[snp_base,ref_base,str(snp_base_freq),
+                                                   str(ref_base_freq),str(coverage_high),
+                                                   str(snp_base_freq+snp_base_freq_low),
+                                                   str(ref_base_freq+ref_base_freq_low),
+                                                   str(coverage_high+coverage_low)]
+    if skip_header>0:
+        logging.info('skip %s header line'%skip_header)
+    open_input.close()
+    return data_per_chr
+
+
+
+format="""
+column:1- Chromosome: Chromosome number from 1-14 (or whatever other designation)
+column:2- BaseNumberInChromosome: Physical position in the chromosome. Starts at 1 and runs until the end of the chromosome. Starts at 1 for each chromosome.
+column:3- BaseNumberInGenome: Physical position in the genome. Starts at 1 in Chromosome 1 and consecutively counts through all the bases on all the chromosomes in the genome. For example, the first base number in Chromosome 2 equals to 1 plus the last base number in Chromosome 1.
+column:4- PlotPositionA: Same as BaseNumberInGenome, but instead of counting bases consecutively, add 50000 between each chromosome (thin plotting gaps between chromosomes).
+column:5- PlotPositionB: Same as BaseNumberInGenome, but instead of counting bases consecutively, add 100000 between each chromosome (medium plotting gaps between chromosomes).
+column:6- PlotPositionC: Same as BaseNumberInGenome, but instead of counting bases consecutively, add 200000 between each chromosome (large plotting gaps between chromosomes).
+column:7- NucleotideInAJ: The nucleotide which is carried by the AJ strain (A, T, C or G)
+column:8- NucleotideInAS: The nucleotide which is carried by the AS strain (A, T, C or G)
+column:9- Coverage_SamplePureAJ_QualityHigh_AlleleAJ: Number of high quality reads that have the AJ allele in the PureAJ sample.
+column:10- Coverage_SamplePureAJ_QualityHigh_AlleleAS: Number of high quality reads that have the AS allele in the PureAJ sample.
+column:11- Coverage_SamplePureAJ_QualityHigh_Total: Total number of high quality reads that have any allele in the PureAJ sample. This is the sum of AJ+AS alleles + all other alleles (most of them caused by  sequencing errors (ca. 1%), some of them from mutations).
+column:12- Coverage_SamplePureAJ_QualityAll_AlleleAJ: Number of low + high quality reads that have the AJ allele in the PureAJ sample.
+column:13- Coverage_SamplePureAJ_QualityAll_AlleleAS: Number of low + high quality reads that have the AS allele in the PureAJ sample.
+column:14- Coverage_SamplePureAJ_QualityAll_Total: Total number of low + high quality reads that have any allele in the PureAJ sample. This is the sum of AJ+AS alleles + all other alleles (most of them caused by  sequencing errors (ca. 1%), some of them from mutations).
+column:15- Coverage_SampleNonselected_QualityHigh_AlleleAJ: Number of high quality reads that have the AJ allele in the Nonselected sample.
+column:16- Coverage_SampleNonselected_QualityHigh_AlleleAS: Number of high quality reads that have the AS allele in the Nonselected sample.
+column:17- Coverage_SampleNonselected_QualityHigh_Total: Total number of high quality reads that have any allele in the Nonselected sample. This is the sum of AJ+AS alleles + all other alleles (most of them caused by sequencing errors (ca. 1%), some of them from mutations).
+column:18- Coverage_SampleNonselected_QualityAll_AlleleAJ: Number of low + high quality reads that have the AJ allele in the Nonselected sample.
+column:19- Coverage_SampleNonselected_QualityAll_AlleleAS: Number of low + high quality reads that have the AS allele in the Nonselected sample.
+column:20- Coverage_SampleNonselected_QualityAll_Total: Total number of low + high quality reads that have any allele in the Nonselected sample. This is the sum of AJ+AS alleles + all other alleles (most of them caused by  sequencing errors (ca. 1%), some of them from mutations).
+column:21- Coverage_SampleSelected_QualityHigh_AlleleAJ:Number of high quality reads that have the AJ allele in the Selected sample.
+column:22- Coverage_SampleSelected_QualityHigh_AlleleAS: Number of high quality reads that have the AS allele in the Selected sample.
+column:23- Coverage_SampleSelected_QualityHigh_Total:Total number of high quality reads that have any allele in the Selected sample. This is the sum of AJ+AS alleles + all other alleles (most of them caused by sequencing errors (ca. 1%), some of them from mutations).
+column:24- Coverage_SampleSelected_QualityAll_AlleleAJ: Number of low + high quality reads that have the AJ allele in the Selected sample.
+column:25- Coverage_SampleSelected_QualityAll_AlleleAS: Number of low + high quality reads that have the AS allele in the Selected sample.
+column:26- Coverage_SampleSelected_QualityAll_Total: Total number of low + high quality reads that have any allele in the Selected sample. This is the sum of AJ+AS alleles + all other alleles (most of them caused by  sequencing errors (ca. 1%), some of them from mutations).
+"""
+all_lines=format.split('\n')
+column_names=[]
+for line in all_lines:
+    line= line.strip()
+    if line!='':
+        column_name=line.split(':')[1].split('-')[1].strip()
+        column_names.append(column_name)
+
+input_file1='/home/tcezard/projects/2009119_Paul_Hunt/AM_553/level3/s_1_sequence_freq.txt'
+input_file2='/home/tcezard/projects/2009119_Paul_Hunt/AM_554/level3/s_2_sequence_freq.txt'
+input_file3='/home/tcezard/projects/2009119_Paul_Hunt/AM_555/level3/s_3_sequence_freq.txt'
+genome_file='/home/tcezard/genomes/plasmodium_chabaudi/PlasmoDB-6.3/PchabaudiGenomic_PlasmoDB-6.3.fasta'
+output_file='/home/tcezard/projects/2009119_Paul_Hunt/LGS-SNP-report-V1.tsv'
+
+#supp_snps = '/home/tcezard/projects/2009119_Paul_Hunt/30CQ/bwa/30CQ_snps_filtered.txt'
+#output_file='/home/tcezard/projects/2009119_Paul_Hunt/30CQ/bwa/30CQ_snps_filtered.tsv'
+#data_per_chr1=read_frequency_file(supp_snps)
+
+open_output=open(output_file,'w')
+data_per_chr1=read_frequency_file(input_file1)
+data_per_chr2=read_frequency_file(input_file2)
+data_per_chr3=read_frequency_file(input_file3)
+reader=FastaReader(open(genome_file))
+chr_position_on_genome=0
+chr_position_on_genome_50kb=0
+chr_position_on_genome_100kb=0
+chr_position_on_genome_200kb=0
+
+open_output.write('\t'.join(column_names)+'\n')
+for chromosome in reader:
+    header,sequence=chromosome
+    chr=header.strip()
+    print chr
+    dict_position1=data_per_chr1.get(chr)
+    if dict_position1:
+        dict_position2=data_per_chr2.get(chr)
+        dict_position3=data_per_chr3.get(chr)
+        all_position_on_chr= dict_position1.keys()
+        all_position_on_chr.sort()
+        for position in all_position_on_chr:
+            info_1=dict_position1.get(position)
+            info_2=dict_position2.get(position)
+            info_3=dict_position3.get(position)
+            out=[]
+            out.append(chr)
+            out.append(str(position))
+            out.append(str(position+chr_position_on_genome))
+            out.append(str(position+chr_position_on_genome_50kb))
+            out.append(str(position+chr_position_on_genome_100kb))
+            out.append(str(position+chr_position_on_genome_200kb))
+            out.extend(info_1) #
+            out.extend(info_2[2:])
+            out.extend(info_3[2:])
+            open_output.write('\t'.join(out)+'\n')
+    chr_position_on_genome+=len(sequence)
+    chr_position_on_genome_50kb+=len(sequence)+50000
+    chr_position_on_genome_100kb+=len(sequence)+100000
+    chr_position_on_genome_200kb+=len(sequence)+200000
+open_output.close()

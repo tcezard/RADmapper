@@ -1,0 +1,125 @@
+'''
+Created on Dec 10, 2010
+
+@author: tcezard
+'''
+from utils import utils_logging, utils_param
+import logging
+import sys
+from optparse import OptionParser
+import utils
+
+
+def _fastq_record_reader(fastq_file):
+    open_file=utils_logging.open_input_file(fastq_file)
+    name='notNone'
+    while name:
+        name = open_file.readline().strip()
+        if name:
+            seqeunce = open_file.readline().strip()
+        if seqeunce:
+            qual_name = open_file.readline().strip()
+        if qual_name:
+            qualities = open_file.readline().strip()
+        yield(name,seqeunce,qual_name,qualities)
+    open_file.close()
+    
+
+def filter_small_rna_adapter(blast_file, fastq_file, output_file):
+    #Get the read length
+    for (name, sequence, qual_name, qualities) in _fastq_record_reader(fastq_file):
+        read_length=len(sequence)
+        break
+    
+    
+    open_file=utils_logging.open_input_file(blast_file)
+    all_reads_valid={}
+    nb_line=0
+    logging.info("load blast data")
+    for line in open_file:
+        nb_line+=1
+        if nb_line%1000000 == 0:
+            print '%s blast lines'%nb_line
+        
+        sp_line = line.split()
+        name = sp_line[0]
+        length = int(sp_line[3])
+        query_start = int(sp_line[6])
+        query_end = int(sp_line[7])
+        target_start = int(sp_line[8])
+        if (length>8 and target_start==1 and query_end>=read_length-1):
+            all_reads_valid[name]=(query_start)
+    open_file.close()
+    print len(all_reads_valid)
+    nb_record=0
+    open_output=utils_logging.open_output_file(output_file, pipe=False)
+    for (name, sequence, qual_name, qualities) in _fastq_record_reader(fastq_file):
+        key = name[1:].replace(':','_')
+        nb_record+=1
+        if nb_record%1000000 == 0:
+            print '%s fastq records'%nb_record
+        query_start = all_reads_valid.get(key)
+        if query_start is not None:
+            sequence=sequence[0:query_start-1]
+            qualities=qualities[0:query_start-1]
+            open_output.write('%s\n%s\n%s\n%s\n'%(name, sequence, qual_name, qualities))
+    open_output.close()
+
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging()
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    filter_small_rna_adapter(options.blast_file, options.fastq_file, options.output_file)
+        
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-b blast_file> <-i fastq_file> <-o output_file>"""
+    description = """"""
+    
+    optparser = OptionParser(description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    
+    optparser.add_option("-i","--fastq_file",dest="fastq_file",type="string",
+                         help="Path to a fastq file that needs filtering. Default: %default")
+    optparser.add_option("-b","--blast_file",dest="blast_file",type="string",
+                         help="Path to a the blast file. Default: %default")
+    optparser.add_option("-o","--output_file",dest="output_file",type="string",
+                         help="The output file. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    arg_pass = arg_pass and utils_param.check_input_file(options.blast_file, pipe_allowed=True)
+    arg_pass = arg_pass and utils_param.check_input_file(options.fastq_file, pipe_allowed=False)
+    arg_pass = arg_pass and utils_param.check_output_file(options.output_file, pipe_allowed=False)
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()
+
+if __name__=="1__main__":
+    blast_file = '/home/tcezard/projects/2010141_Buck_Amy/2010_SOL_AB360__A2mock/101102_62P54AAXX_6_0/101102_62P54AAXX_6_0.blastm8_head'
+    fastq_file = '/home/tcezard/projects/2010141_Buck_Amy/2010_SOL_AB360__A2mock/101102_62P54AAXX_6_0/101102_62P54AAXX_6_0.solfastq_head'
+    output_fastq_file = '/home/tcezard/projects/2010141_Buck_Amy/2010_SOL_AB360__A2mock/101102_62P54AAXX_6_0/101102_62P54AAXX_6_0_trim.solfastq'
+    filter_small_rna_adapter(blast_file, fastq_file,output_fastq_file)
+            
+        
+            
+                

@@ -1,0 +1,74 @@
+'''
+Created on 15 Apr 2010
+
+@author: tcezard
+'''
+from utils.Binning import load_distribution
+import sys
+from utils import utils_logging
+import logging
+from optparse import OptionParser
+
+    
+        
+def main():
+    #initialize the logging
+    utils_logging.init_logging()
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+   
+    if options.input:
+        dist = load_distribution(options.input,string=options.string)
+    else:
+        dist = load_distribution(sys.stdin,string=options.string)
+    if options.output:
+        dist.print_dist(options.output, textgraph=options.textgraph, sort_by_weight=options.sort_by_weight, reverse=options.reverse, nb_bin=options.nb_bin)
+    else:
+        out = dist.print_dist(textgraph=options.textgraph, sort_by_weight=options.sort_by_weight, reverse=options.reverse, nb_bin=options.nb_bin)
+        sys.stdout.write(out)
+        
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-g genome_fasta> <-1 first fastq file> [ -2 second fastq file -n sample_name]"""
+    description = """This script print a distribution of number coming from stdin"""
+    
+    optparser = OptionParser(description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-i","--input",dest="input",type="string",
+                         help="print the distribution from a file instead of stdin. Default: %default")
+    optparser.add_option("-o","--output",dest="output",type="string",
+                         help="print the distribution to a file instead of stdout. Default: %default")
+    optparser.add_option("-t","--textgraph",dest="textgraph",action='store_true',default=False,
+                         help="show the distribution as text graph. Default: %default")
+    optparser.add_option("-s","--string",dest="string",action='store_true',default=False,
+                         help="the input will be string. Default: %default")
+    optparser.add_option("-w","--sort_by_weight",dest="sort_by_weight",action='store_true',default=False,
+                         help="sort the output by weight. Default: %default")
+    optparser.add_option("-r","--reverse",dest="reverse",action='store_true',default=False,
+                         help="Reverse the sorting order. Default: %default")
+    optparser.add_option("-b","--nb_bin",dest="nb_bin",type='int',default=None,
+                         help="If set the data will be binned in the provided number of equally spaced bin. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

@@ -1,0 +1,235 @@
+'''
+Created on 1 Mar 2010
+
+@author: tcezard
+'''
+
+from utils import utils_logging, get_pileup_from_bam
+from utils.Binning import Distribution_holder
+from utils.GenomeLoader import GenomeLoader
+from utils.utils_param import check_input_file, check_output_file
+import logging
+import matplotlib.pyplot as plt
+import sys
+import utils
+from optparse import OptionParser
+
+
+def add_one_value_to_dist(position, value, bin_size, curr_bin, curr_bin_dist, bin_array):
+    if bin_size:
+        bin=int(position/bin_size)
+        if curr_bin!=bin:
+            # Add the bin and renew it
+            if curr_bin_dist is not None:
+                #Get the median
+                #bin_array.append(curr_bin_dist.get_percentiles([50]))
+                #Get the mean
+                bin_array.append(curr_bin_dist.get_mean())
+                
+            curr_bin_dist=Distribution_holder()
+            curr_bin=bin
+        curr_bin_dist.add_value(value)
+    else:
+        curr_bin=None
+        curr_bin_dist=None
+    return (curr_bin,curr_bin_dist)
+
+def get_binned_coverage(bam_file, genome_file, bin_size):
+    """Generator that returns a array of value with one value for each bin
+    """
+    if genome_file:
+        open_genome=GenomeLoader(genome_file,keep_until_done=True)
+
+    count_line=0
+    prev_coord=0
+    curr_chr=None
+    curr_bin=-1
+    curr_bin_dist=None
+    bin_array=[]
+    if bam_file is not None:
+        input_stream=get_pileup_from_bam(bam_file, genome_file)
+        
+        for line in input_stream:
+            count_line+=1
+            sp_line = line.strip().split()
+            ## do not process line specifying the deletion
+            if sp_line[2]=='*':
+                continue
+            chr=sp_line[0]
+            coord=int(sp_line[1])
+            if chr!=curr_chr:
+                if curr_chr and genome_file:
+                    #Add 0 at the end of the chromosome
+                    (header, sequence)=open_genome.get_chr(curr_chr)
+                    for i in range(prev_coord+1,len(sequence)):
+                        
+                        (curr_bin,curr_bin_dist)=add_one_value_to_dist(i, 0, bin_size, curr_bin, curr_bin_dist,
+                                                            bin_array)
+                     
+                    if bin_size and bin_array:
+                        yield (bin_array, curr_chr , len(sequence))
+                bin_array=[]
+                curr_chr=chr
+            
+            if prev_coord+1<coord:
+                for i in range(prev_coord+1, coord):
+                    (curr_bin,curr_bin_dist)=add_one_value_to_dist(i, 0, bin_size, curr_bin, curr_bin_dist,
+                                                            bin_array)
+                
+            (curr_bin,curr_bin_dist)=add_one_value_to_dist(coord, int(sp_line[3]), bin_size, curr_bin, curr_bin_dist,
+                                                            bin_array)
+            
+            if coord%1000000==0:
+                print coord
+            prev_coord=coord
+        input_stream.close()
+        
+        if curr_chr and genome_file:
+            #Add 0 at the end of the chromosome
+            (header, sequence)=open_genome.get_chr(curr_chr)
+            for i in range(prev_coord+1,len(sequence)):
+                (curr_bin,curr_bin_dist)=add_one_value_to_dist(i, 0, bin_size, curr_bin, curr_bin_dist,
+                                                            bin_array)
+        if bin_size and bin_array:
+            yield (bin_array, curr_chr, len(sequence))
+    
+def get_binned_no_coverage(genome_file):
+    open_genome=GenomeLoader(genome_file)
+    all_chrs=open_genome.load_all()
+    for chr in all_chrs:
+        (header, sequence)=open_genome.get_chr(chr)
+        yield (None, chr, len(sequence))
+    
+
+def plot_snps_and_coverage(bam_file, genome_file, input_snps_file,  bin_size, output_file):
+    import numpy as np
+
+    open_input=open(input_snps_file)
+    data_per_chr={}
+    skip_header=0
+    header=True
+    for line in open_input:
+        ##Skip header line
+        sp_line=line.strip().split()
+        if header and not sp_line[1].isdigit():
+            skip_header+=1
+            continue
+        header=False
+        if data_per_chr.get(sp_line[0]) is None:
+            data_per_chr[sp_line[0]]=([],[])
+        array_homo, array_het=data_per_chr.get(sp_line[0])
+        if sp_line[4][0]!=sp_line[4][1]:
+            array_het.append(int(sp_line[1]))
+        else:
+            array_homo.append(int(sp_line[1]))
+    logging.info('skip %s header line'%skip_header)
+    
+    if bam_file is None:
+        binned_coverage=get_binned_no_coverage(genome_file)
+    else:
+        binned_coverage=get_binned_coverage(bam_file, genome_file, bin_size)
+    for info in binned_coverage:
+        if info:
+            (bin_coverage_array, chr, chr_size)=info
+        
+        data=data_per_chr.get(chr)
+        
+        if data:
+            het_prop=[]
+            array_homo, array_het=data
+            maxi=int(((chr_size/bin_size)+1)*bin_size)
+            bins=range(0,maxi,bin_size)
+            
+            binned_array_homo,bin_edges=np.histogram(array_homo, bins, normed=False)
+            binned_array_het,bin_edges=np.histogram(array_het, bins, normed=False)
+            
+            fig = plt.figure(figsize=(16, 6), dpi=300)
+            ax = fig.add_subplot(1,1,1)
+            x1=range(0,len(binned_array_het)*bin_size,bin_size)
+            ax.plot(x1, binned_array_het, 'b', label='het snps')
+            if bin_coverage_array is None:
+                ax.plot(x1, binned_array_homo, '--g', label='hom snps')
+            ax.set_ylabel('nb snps', color='b')
+            for tl in ax.get_yticklabels():
+                tl.set_color('b')
+            
+            if bin_coverage_array is not None:
+                x2=range(0,len(bin_coverage_array)*bin_size,bin_size)
+                ax2 = ax.twinx()
+                ax2.plot(x2,bin_coverage_array, '--r', label='mean coverage')
+                ax2.set_ylabel('mean coverage', color='r')
+                for tl in ax2.get_yticklabels():
+                    tl.set_color('r')
+                
+                plt.title('Mean coverage and heterozigous snps (bin=%skb)'%(bin_size/1000))
+            else:
+                plt.title('snps (bin=%skb)'%(bin_size/1000))
+                plt.legend()
+            plt.xlim(0, chr_size)
+            ax.set_xlabel('position')
+            plt.savefig(output_file, dpi=300, bbox_inches='tight')
+            
+def main():
+    #initialize the logging
+    utils_logging.init_logging()
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    plot_snps_and_coverage(options.bam_file, options.genome_file, options.input_snps_file,
+                           options.bin_size, options.output_file)
+
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script is a template to of a python script that include help and option's checking.
+    The requirement and assumption of the script can be described here.
+    A link to another documentation can also be added here."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-i","--bam_file",dest="bam_file",type="string",
+                         help="Path to a bam file where the input data are located. Default: %default")
+    optparser.add_option("-s","--input_snps_file",dest="input_snps_file",type="string",
+                         help="Path to a snp file for that genome. Default: %default")
+    optparser.add_option("-o","--output",dest="output_file",type="string",
+                         help="Path to a image file where the plot will be output. Default: %default")
+    optparser.add_option("-g","--genome_file",dest="genome_file",type="string",
+                         help="A fasta file containing the genome. Default: %default")
+    optparser.add_option('-b',"--bin_size",dest="bin_size",type="int",
+                         help="The bin size to use for that plot. Default: %default")
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    #arg_pass = arg_pass and check_input_file(options.bam_file, pipe_allowed=True)
+    arg_pass = arg_pass and check_output_file(options.output_file, pipe_allowed=False)
+    if not options.genome_file:
+        logging.error("You must specify a fasta file containing the genome.")
+        arg_pass=False
+    if not options.input_snps_file:
+        logging.error("You must specify a snps file for that genome.")
+        arg_pass=False
+    if not options.bin_size:
+        logging.error("You must specify the bin size for the plot.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()

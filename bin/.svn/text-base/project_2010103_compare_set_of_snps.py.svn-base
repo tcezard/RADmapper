@@ -1,0 +1,70 @@
+'''
+Created on Mar 9, 2011
+
+@author: tcezard
+'''
+from utils import utils_logging
+import sys
+
+def output_marker_with_snps(cluster_id,alleles, snps):
+    sys.stdout.write("%s\t"%(cluster_id))
+    for allele_string_array in alleles:
+        sys.stdout.write("\t".join([str(value) for value in allele_string_array]))
+        sys.stdout.write('\t')
+    all_snps_pos = snps.keys()
+    all_snps_pos.sort()
+    for snps_pos in all_snps_pos:
+        bases_change=snps.get(snps_pos)
+        sys.stdout.write('%s:%s'%(snps_pos, '/'.join(bases_change)))
+        sys.stdout.write('\t')
+    print 
+    
+            
+def read_marker_with_snps(line):
+    sp_line = line.strip().split()
+    cluster_id = sp_line[0]
+    alleles=[]
+    i=1
+    number_allele=int(sp_line[1])
+    number_sample=len(sp_line[2])
+    for i in range(number_allele):
+        alleles.append(sp_line[(i*(3+number_sample))+1 : (i*(3+number_sample))+number_sample+4])
+    snps={}
+    #CTATCCGCAATAGGCTAAGA NA      14      NA      46:A/G  92:G/A
+    for i in range((number_allele*(3+number_sample))+number_sample+4, len(sp_line)):
+        number, base_change_str = sp_line[i].split(':')
+        bases_change = base_change_str.split('/')
+        snps[number]=bases_change
+    return cluster_id, alleles, snps
+
+def read_one_file(input_file):
+    open_file=open(input_file)
+    all_clusters={}
+    all_alleles={}
+    for line in open_file:
+        cluster_id, alleles, snps =  read_marker_with_snps(line)
+        all_clusters[cluster_id]=(alleles, snps)
+        for allele in alleles:
+            all_alleles[allele[2]]=cluster_id
+    return all_clusters, all_alleles
+
+if __name__=="__main__":
+    count_present_in_both=0
+    count_not_present_in_both=0
+    input_file_1 = sys.argv[1]
+    input_file_2 = sys.argv[2]
+    all_clusters_1, all_alleles_1 = read_one_file(input_file_1)
+    all_clusters_2, all_alleles_2 = read_one_file(input_file_2)
+    for allele in all_alleles_1.keys():
+        if all_alleles_2.has_key(allele):
+            count_present_in_both+=1
+            cluster_id_1 = all_alleles_1.get(allele)
+            alleles, snps = all_clusters_1.get(cluster_id_1)
+            output_marker_with_snps(cluster_id_1, alleles, snps)
+            
+            cluster_id_2 = all_alleles_2.get(allele)
+            alleles, snps = all_clusters_2.get(cluster_id_2)
+            #output_marker_with_snps(cluster_id_2, alleles, snps)
+        else:
+            count_not_present_in_both+=1
+    #print count_present_in_both, count_not_present_in_both

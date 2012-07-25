@@ -1,0 +1,1051 @@
+#!/usr/bin/env python
+'''
+Created on 8 Feb 2010
+
+@author: Timothee Cezard tcezard(at)staffmail(dot)ed(dot)ac(dot)uk
+Copyright 2010 Timothee Cezard
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+'''
+import threading
+import utils
+import sys
+import time
+import os
+import logging
+from optparse import OptionParser
+
+import sqlite3
+from utils import utils_commands, utils_logging, utils_param
+from utils.memonitor import getChildrenPid
+import subprocess
+
+default_column_header= ['job_id', 'command', 'name', 'priority', 'user', 'date_submited',
+         'date_start', 'date_end', 'status', 'return_code', 'pid','log_file', 'curr_dir']
+simple_column_header= ['job_id', 'name', 'priority', 'date_submited',
+         'date_start', 'date_end', 'status', 'return_code', 'pid','log_file','command']
+
+default_id_table_name='commandParam'
+default_pending_table_name='commandToRun'
+default_running_table_name='commandRunning'
+default_finished_table_name='commandFinished'
+default_db_def={'tables':[default_pending_table_name, default_running_table_name, default_finished_table_name, default_id_table_name],
+                   'tables_abrev':['ct', 'cf', 'id'],
+                   default_pending_table_name: ['id', 'command', 'name', 'priority', 'user', 'date_submited', 'date_start',
+                                                 'date_end', 'status', 'return_code', 'pid', 'log_file', 'curr_dir'],
+                   default_finished_table_name: ['id', 'command', 'name', 'priority', 'user', 'date_submited', 'date_start',
+                                                  'date_end', 'status', 'return_code', 'pid','log_file', 'curr_dir'],
+                   default_running_table_name: ['id', 'command', 'name', 'priority', 'user', 'date_submited', 'date_start',
+                                                 'date_end', 'status', 'return_code', 'pid', 'log_file', 'curr_dir'],
+                   default_id_table_name: ['id', 'last_submitted_command_id', 'max_nb_thread', 'pid' ],
+                   'id':'INTEGER PRIMARY KEY AUTOINCREMENT',
+                   'command': "TEXT",
+                   'name': "TEXT",
+                   'priority': "INTEGER",
+                   'user' : "INTEGER",
+                   'date_submited': "JULIAN",
+                   'date_start': "JULIAN",
+                   'date_end': "JULIAN",
+                   'status': "TEXT",
+                   'return_code': "INTEGER",
+                   'log_file': "TEXT",
+                   'curr_dir': "TEXT",
+                   'last_submitted_command_id': "INTEGER",
+                   'max_nb_thread': "INTEGER",
+                   'pid': "INTEGER"
+                   }
+
+default_queue_jobs_dir=os.path.join(os.path.expanduser('~'),'.queue_jobs')
+default_db_file=os.path.join(default_queue_jobs_dir,'commands_store.sqlite')
+default_time_Format= '%Y-%m-%d %H:%M:%S'
+
+COMMAND_STOP='stop'
+COMMAND_RUN='run'
+COMMAND_LIST='list'
+COMMAND_DEL='del'
+COMMAND_CHANGE='change'
+COMMAND_TYPE=[COMMAND_RUN,COMMAND_STOP,COMMAND_LIST,COMMAND_DEL,COMMAND_CHANGE]
+
+STATUS_RUNNING='RUNNING'
+STATUS_PENDING='PENDING'
+STATUS_DONE='DONE'
+STATUS_PAUSED='PAUSED'
+STATUS_FAILED='FAILED'
+STATUS_CANCEL='CANCELLED'
+STATUS_KILLED='KILLED'
+STATUS_TYPE=[STATUS_RUNNING,STATUS_PENDING,STATUS_PAUSED,STATUS_DONE,STATUS_FAILED, STATUS_CANCEL, STATUS_KILLED]
+
+time_gap=60
+
+def daemonize (stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
+    '''This forks the current process into a daemon. The stdin, stdout, and
+    stderr arguments are file names that will be opened and be used to replace
+    the standard file descriptors in sys.stdin, sys.stdout, and sys.stderr.
+    These arguments are optional and default to /dev/null. Note that stderr is
+    opened unbuffered, so if it shares a file with stdout then interleaved
+    output may not appear in the order that you expect. '''
+ 
+    # Do first fork.
+    try:
+        pid = os.fork()
+        if pid > 0:
+            sys.exit(0)   # Exit first parent.
+    except OSError, e:
+        sys.stderr.write ("fork #1 failed: (%d) %s\n" % (e.errno, e.strerror) )
+        sys.exit(1)
+ 
+    # Decouple from parent environment.
+    os.chdir("/")
+    os.umask(0)
+    os.setsid()
+ 
+    # Do second fork.
+    try:
+        pid = os.fork()
+        if pid > 0:
+            sys.exit(0)   # Exit second parent.
+    except OSError, e:
+        sys.stderr.write ("fork #2 failed: (%d) %s\n" % (e.errno, e.strerror) )
+        sys.exit(1)
+ 
+    # Now I am a daemon!
+ 
+    # Redirect standard file descriptors.
+    if stdin is not None:
+        si = open(stdin, 'r')
+        os.dup2(si.fileno(), sys.stdin.fileno())
+    if stdout is not None:
+        so = open(stdout, 'w')
+        os.dup2(so.fileno(), sys.stdout.fileno())
+    if stderr is not None:
+        se = open(stderr, 'a+', 0)
+        os.dup2(se.fileno(), sys.stderr.fileno())
+ 
+class JobPriorityQueue(object):
+    def __init__(self, max_number_thread=None, database_file=None, recreate=False):
+        if database_file is None:
+            self.database_file=default_db_file
+        else:
+            self.database_file=database_file
+        if not os.path.exists(os.path.dirname(self.database_file)):
+            os.makedirs(os.path.dirname(self.database_file))
+        
+        self.connection=sqlite3.connect(self.database_file, check_same_thread=False)
+        #default is set to autocommit all queries
+        self.connection.isolation_level=None
+        self.cursor=self.connection.cursor()
+        
+        self.lock = threading.RLock()
+
+        if not self._test_database_exist(default_db_def) or recreate:
+            self._create_database(default_db_def)
+            
+        if max_number_thread is not None :
+            self.max_number_thread=max_number_thread
+            self._set_max_nb_thread(max_number_thread)
+        else:
+            self.max_number_thread=1
+        self._insert_default_param()
+        
+    def _execute_query(self, query):
+        with self.lock:
+            cursor=self._get_cursor()
+            logging.debug(query)
+            cursor.execute(query)
+            return cursor.fetchall()
+    
+    def _create_database(self, database_def):
+        '''Create or recreate the database from the given definition'''
+        for table_name in database_def.get('tables'):
+            query="""DROP TABLE IF EXISTS %s"""%(table_name)
+            self._execute_query(query)
+            table_def_array=[]
+            headers=database_def.get(table_name)
+            extra=None
+            for header in headers:
+                table_def_array.append('%s %s'%(header,database_def.get(header)))
+            if database_def.has_key('extra_%s'%table_name):
+                extra=database_def.get('extra_%s'%table_name)
+                table_def_array.append(extra)
+            query="""CREATE TABLE %s (%s)"""%(table_name,', '.join(table_def_array))
+            self._execute_query(query)
+            
+    def _insert_default_param(self):
+        result=None
+        query="SELECT id, last_submitted_command_id, max_nb_thread, pid FROM %s"%default_id_table_name
+        results=self._execute_query(query)
+        if len(results) == 0 :
+            query="""INSERT INTO %s (last_submitted_command_id, max_nb_thread, 'pid') VALUES (0,%s,-1)"""%(default_id_table_name, self.max_number_thread)
+            self._execute_query(query)
+            
+            query="SELECT id, last_submitted_command_id, max_nb_thread, pid FROM %s"%default_id_table_name
+            self._execute_query(query)
+            results=self._execute_query(query)
+        if len(results) > 0 :
+            result=results[0]
+        return result
+        
+    def _get_param_id(self):
+        result=self._insert_default_param()
+        id, last_submitted_command_id, max_nb_thread, pid=result
+        return id
+    
+    def _get_command_id(self):
+        result=self._insert_default_param()
+        id, last_submitted_command_id, max_nb_thread, pid=result
+        return id, last_submitted_command_id
+        
+    def _get_max_nb_thread(self):
+        result=self._insert_default_param()
+        id, last_submitted_command_id, max_nb_thread, pid=result
+        return id, max_nb_thread
+    
+    def _get_current_pid(self):
+        result=self._insert_default_param()
+        id, last_submitted_command_id, max_nb_thread, pid=result
+        return id, pid
+
+   
+    def _generate_command_id(self):
+        '''Create a command id by incrementing the last_submitted_command_id in the database.'''
+        
+        param_id,last_submitted_command_id=self._get_command_id()
+        command_id=str(last_submitted_command_id+1)
+        query="UPDATE %s SET last_submitted_command_id=%s WHERE id=%s"%(default_id_table_name, command_id, param_id)
+        
+        self._execute_query(query)
+        return command_id
+
+    def _test_sqlite_tables_exists(self, table_names):
+        '''Test if a specific table already exist by checking the sqlite_master table'''
+        exists=False
+        all_existing_table_name=[]
+        query="SELECT name FROM sqlite_master"
+        all_results=self._execute_query(query)
+        for name, in all_results:
+            all_existing_table_name.append(name)
+        for name in table_names:
+            if name in all_existing_table_name:
+                exists=True
+            else:
+                exists=False
+                break
+        return exists
+    
+    def _test_database_exist(self, database_def):
+        '''Check if a database exist by checking all its tables'''
+        return self._test_sqlite_tables_exists(database_def.get('tables'))
+    
+    def _get_cursor(self):
+        '''Create the cursor if it does not exist or simply return the existing one.'''
+        if self.cursor is None:
+            self.cursor = self.connection.cursor()
+        return self.cursor
+    
+    
+    def add_job_2_db(self, job, table_name=default_pending_table_name):
+        '''Add a job to the commandToRun tables by default.'''
+        if job.name is None:
+            job.generate_name()
+        if job.job_id is None:
+            job.job_id=self._generate_command_id()
+            job.name=job.name+'.%s'%job.job_id
+        if job.date_submited is None or job.date_submited=='':
+            date_submited='julianday("'+time.strftime(default_time_Format)+'")'
+        else:
+            date_submited='julianday("'+job.date_submited+'")'
+        if  job.date_start is None or job.date_start=='':
+            date_start='NULL'
+        else:
+            date_start='julianday("'+job.date_start+'")'
+        if  job.date_end is None or job.date_end=='':
+            date_end='NULL'
+        else:
+            date_end='julianday("'+job.date_end+'")'
+        if job.status is None:
+            status='NULL'
+        else:
+            status=job.status
+        if job.return_code is None:
+            return_code='NULL'
+        else:
+            return_code=job.return_code
+        if job.pid is None:
+            pid='NULL'
+        else:
+            pid=job.pid
+        if job.log_file is None:
+            log_file='NULL'
+        else:
+            log_file=job.log_file
+        if job.curr_dir is None:
+            curr_dir='NULL'
+        else:
+            curr_dir=job.curr_dir
+        
+        command=job.command.replace("'", "''")
+        name=job.name.replace("'", "''")
+        query='''INSERT INTO %s (id, command, name, priority, user, date_submited, date_start,
+        date_end, status, return_code, pid, log_file, curr_dir) 
+        VALUES (%s, '%s', '%s', %s, '%s', %s, %s, %s, '%s', %s, %s, '%s', '%s')'''%(table_name, job.job_id, command, name,
+                                                                job.priority, job.user, date_submited, date_start, 
+                                                                date_end, status, return_code, pid,log_file, curr_dir)
+        
+        self._execute_query(query)
+        
+        
+    def add_jobs_2_db(self, jobs, table_name=default_pending_table_name):
+        """Add several jobs to the specified tables"""
+        query="BEGIN TRANSACTION"
+        self._execute_query(query)
+        for job in jobs:
+            self.add_job_2_db(job)
+        query="COMMIT"
+        self._execute_query(query)
+        
+        
+    def add_commands_2_db(self, commands, names=None, priorities=50, table_name=default_pending_table_name):
+        """Add several commands to the specified tables. 
+        @deprecated: this function should not be used you should use add_jobs_2_db instead."""
+        query="BEGIN TRANSACTION"
+        self._execute_query(query)
+        for i, command in enumerate(commands):
+            if type(priorities) is list:
+                priority=priorities[i]
+            else:
+                priority=priority
+            if names is None:
+                name=None
+            else:
+                name=names[i]
+            job=Job(command, name=name, priority=priority)
+            self.add_job_2_db(job)
+        query="COMMIT"
+        self._execute_query(query)
+    
+    
+    def _get_job_from_db(self, table_name, cond_job_ids=[], cond_user=None, max_return=0, order_by=None, reverse_order=False):
+        query='''SELECT id, command, name, priority, user, status, return_code, pid, log_file,
+        curr_dir, datetime(date_submited), datetime(date_start), datetime(date_end)
+        FROM %s '''%(table_name)
+        
+        query+=self._add_condition(cond_job_ids=cond_job_ids, cond_user=cond_user)
+        query+=self._add_order(order_by=order_by, reverse_order=reverse_order)
+        query+=self._add_limit(max_return=max_return)
+        
+        all_results=self._execute_query(query)
+        jobs=[]
+        for job_id, command, name, priority, user, status, return_code, pid,\
+        log_file, curr_dir, date_submited, date_start, date_end in all_results:
+            if curr_dir=='NULL':
+                curr_dir=None
+            jobs.append(Job(command, name, priority,
+                            user=user, status=status, 
+                            return_code=return_code,
+                            date_submited=date_submited,
+                            date_start=date_start,
+                            date_end=date_end,
+                            job_id=job_id, pid=pid,
+                            log_file=log_file,
+                            curr_dir=curr_dir))
+        return jobs
+    
+    def _add_condition(self, job_list=[], cond_job_ids=[], cond_user=None):
+        conditions=[]
+        query=''
+        if cond_user: 
+            conditions.append('user=%s'%cond_user)
+        if cond_job_ids:
+            conditions_id=[]
+            for id in cond_job_ids:
+                conditions_id.append('id=%s'%id)
+            conditions.append(' OR '.join(conditions_id))
+        if job_list:
+            conditions_id=[]
+            for job in job_list:
+                conditions_id.append('id=%s'%job.job_id)
+            conditions.append(' OR '.join(conditions_id))
+        if len(conditions)>0:
+            query+=' WHERE '+' AND '.join(conditions)
+        return query
+            
+    def _add_order(self, order_by=None, reverse_order=False):
+        query=''
+        if order_by:
+            if reverse_order:
+                query+=" ORDER BY %s DESC"%order_by
+            else:
+                query+=" ORDER BY %s"%order_by
+        return query
+    
+    def _add_limit(self, max_return=0):
+        query=''
+        if max_return and max_return>0:
+            query+=' LIMIT %s'%max_return
+        return query
+    
+    
+    def get_N_first_jobs_from_db(self, N=1, table_name=default_pending_table_name, delete=False, order_by=None, reverse_order=False):
+        jobs=self._get_job_from_db(table_name=table_name, cond_job_ids=None, cond_user=None,
+                                   max_return=N, order_by=order_by, reverse_order=reverse_order)
+        if delete:
+            query="BEGIN TRANSACTION"
+            self._execute_query(query)
+            for job in jobs:
+                self._remove_job_from_table(job, table_name)
+            query="COMMIT"
+            self._execute_query(query)
+        return jobs
+
+    def get_N_first_prioratized_jobs_from_db(self, N=1, delete=False, order_by=None, reverse_order=False):
+        jobs_running=self._get_job_from_db(table_name=default_running_table_name, cond_job_ids=None, cond_user=None,
+                                   order_by=order_by, reverse_order=reverse_order)
+        all_jobs=[]
+        all_jobs.extend(jobs_running)
+        jobs_pending=self._get_job_from_db(table_name=default_pending_table_name, cond_job_ids=None, cond_user=None,
+                                   max_return=N, order_by=order_by, reverse_order=reverse_order)
+        job_to_launch=N-len(jobs_running)
+        if job_to_launch>0:
+            return_jobs=jobs_pending[:job_to_launch]
+        else:
+            return_jobs=[]
+        #This part need to be reviewed as the restart doesn't seem to work
+        #all_jobs.extend(jobs_pending)
+        #all_jobs.sort(key= lambda j: j.priority)
+        #return_jobs=[]
+        #for job in all_jobs[:N]:
+        #    if job.status==STATUS_RUNNING:
+        #        pass
+        #    else:
+        #        return_jobs.append(job)
+        #for job in all_jobs[N:]:
+        #    if job.status==STATUS_RUNNING:
+        #        pause_one_job(self, job)
+        #    else:
+        #        pass
+        if delete:
+            query="BEGIN TRANSACTION"
+            self._execute_query(query)
+            for job in return_jobs:
+                self._remove_job_from_table(job, default_pending_table_name)
+            query="COMMIT"
+            self._execute_query(query)
+        return return_jobs
+    
+    def get_jobs_from_db(self, table_name=None, job_ids=[], user=None, order_by=None, reverse_order=False):
+        if table_name is None:
+            jobs=[]
+            jobs.extend(self._get_job_from_db(table_name=default_pending_table_name, cond_job_ids=job_ids,
+                                       cond_user=user, order_by=order_by, reverse_order=reverse_order))
+            jobs.extend(self._get_job_from_db(table_name=default_running_table_name, cond_job_ids=job_ids,
+                                       cond_user=user, order_by=order_by, reverse_order=reverse_order))
+            jobs.extend(self._get_job_from_db(table_name=default_finished_table_name, cond_job_ids=job_ids,
+                                       cond_user=user, order_by=order_by, reverse_order=reverse_order))
+            
+        else:
+            jobs=self._get_job_from_db(table_name=table_name, cond_job_ids=job_ids,
+                                       cond_user=user, order_by=order_by, reverse_order=reverse_order)
+        return jobs
+    
+    def remove_jobs_from_db(self, table_name=None, job_list=[], job_ids=[], user=None):
+        if table_name==None:
+            query='''DELETE FROM %s '''%(default_pending_table_name)
+            query+=self._add_condition(job_list=job_list, cond_job_ids=job_ids, cond_user=user)
+            self._execute_query(query)
+            
+            query='''DELETE FROM %s '''%(default_running_table_name)
+            query+=self._add_condition(job_list=job_list, cond_job_ids=job_ids, cond_user=user)
+            self._execute_query(query)
+        else:
+            query='''DELETE FROM %s '''%(table_name)
+            query+=self._add_condition(job_list=job_list, cond_job_ids=job_ids, cond_user=user)
+            self._execute_query(query)
+            
+    
+    def _remove_job_from_table(self, job, table_name=default_pending_table_name):
+        query="""DELETE FROM %s WHERE id=%s"""%(table_name, job.job_id)
+        self._execute_query(query)
+    
+    def _set_max_nb_thread(self, max_nb_thread):
+        param_id=self._get_param_id()
+        query="UPDATE %s SET max_nb_thread=%s WHERE id=%s"%(default_id_table_name, max_nb_thread, param_id)
+        self._execute_query(query)
+        
+    def get_max_nb_thread(self):
+        param_id, max_nb_thread=self._get_max_nb_thread()
+        return max_nb_thread
+
+    def __len__(self):
+        query='SELECT COUNT(*) FROM %s'%default_pending_table_name
+        all_results=self._execute_query(query)
+        res,= all_results[0]
+        return int(res)
+    
+    def get_nb_running_jobs(self):
+        """Return the current number of running jobs."""
+        query='SELECT COUNT(*) FROM %s'%default_running_table_name
+        all_results=self._execute_query(query)
+        res,= all_results[0]
+        return int(res)
+    
+    def recreate(self):
+        """This function erase completely the previous database and recreate and empty one.
+        Use with caution."""
+        self._create_database(default_db_def)
+    
+    def set_pid(self, pid):
+        """Set the pid of the deamon."""
+        param_id=self._get_param_id()
+        query="UPDATE %s SET pid='%s' WHERE id=%s"%(default_id_table_name, pid, param_id)
+        
+        self._execute_query(query)
+        
+    def get_pid(self):
+        """Return the process id of the deamon."""
+        param_id, pid=self._get_current_pid()
+        return pid
+        
+    def is_running(self):
+        """Return True if the deamon is running."""
+        param_id, pid = self._get_current_pid()
+        if pid >0 :
+            return True
+        
+    def set_done(self):
+        self.set_pid(-1)
+
+def compare_job_by_priority(job1,job2):
+    if job1.priority<job2.priority:
+        return 1
+    elif job1.priority<job2.priority:
+        return -1
+    elif job1.status == STATUS_RUNNING:
+        return 1
+    elif job2.status == STATUS_RUNNING:
+        return -1
+    elif time.strptime(job1.date_submited, default_time_Format) <  time.strptime(job2.date_submited, default_time_Format):
+        return 1
+    elif time.strptime(job1.date_submited, default_time_Format) >  time.strptime(job2.date_submited, default_time_Format):
+        return -1
+    else:
+        return 0
+    
+class Job():
+    """A job is an object containing command line and information associated."""
+    def __init__(self,command, name=None, priority=50, status=STATUS_PENDING,
+                 date_submited=None, date_start=None ,date_end=None,
+                 user=None, job_id=None, return_code=None, pid=None,
+                 log_file=None, curr_dir=None):
+        self.command=command
+        if name is None:
+            self.generate_name()
+        else:
+            self.name=name
+        self.priority=int(priority)
+        self.status=status
+        self.date_start=date_start
+        self.date_end=date_end
+        if not user:
+            user=os.environ['USER']
+        self.user=user
+        self.date_submited=date_submited
+        self.job_id=job_id
+        self.return_code=return_code
+        self.pid=pid
+        self.log_file=log_file
+        self.curr_dir=curr_dir
+    
+    def generate_name(self):
+        sp_command=self.command.split()
+        self.name=os.path.basename(sp_command[0])
+        if len(sp_command)>1:
+            self.name='%s_%s'%(self.name,os.path.basename(sp_command[1]))
+    
+    
+    def __str__(self):
+        outString=[]
+        outString.append('%s'%(str(self.command)))
+        outString.append('%s'%(str(self.priority)))
+        outString.append('%s'%(str(self.status)))
+        return  '\t'.join(outString)
+
+
+def formatListJobs(listJobs, column_header=default_column_header):
+    """This function creates a array formated string of all the job provided."""
+    #get the column length
+    column_length=[]
+    for header in column_header:
+        column_length.append(len(header))
+    all_job_and_attributes=[]
+    for job in listJobs:
+        all_attributes=[]
+        all_job_and_attributes.append(all_attributes)
+        for i,header in enumerate(column_header):
+            attr=getattr(job,header)
+            attr=str(attr)
+            #attr=attr.replace('/home/'+os.getlogin(),'~')
+            #store the attribute
+            all_attributes.append(attr)
+            length=len(attr)
+            if column_length[i]<length:
+                column_length[i]=length
+                
+    line_length=0
+    # get the total length of the line
+    for i in range(len(column_length)):
+        column_length[i]+=0
+        line_length+=column_length[i]
+    line_length+=(len(column_length)*3) + 1
+    return_string=[]
+    #print the Text
+    seperation_line='-'*line_length
+    return_string.append(seperation_line)
+    outString=' '
+    headers_str=[]
+    for i in range(len(column_header)):
+        headers_str.append(' %-*s '%(column_length[i],column_header[i]))
+    return_string.append(outString+outString.join(headers_str)+outString)
+    return_string.append(seperation_line)
+    for all_attributes in all_job_and_attributes:
+        values_str=[]
+        for i,header in enumerate(column_header):
+            values_str.append(' %-*s '%(column_length[i],all_attributes[i]))
+        return_string.append(outString+outString.join(values_str)+outString)
+    return_string.append(seperation_line)
+    return '\n'.join(return_string)
+
+class Threaded_process_job (threading.Thread ):
+    def __init__(self, job_queue, job, nice=False):
+        """Prepare the thread and initialise the logging machinery."""
+        threading.Thread.__init__ ( self )
+        self.job_queue=job_queue
+        self.job=job
+        if nice and not job.command.startswith('nice '):
+            self.job.command='nice %s '%(job.command)
+        
+    
+    def run (self):
+        """In the thread start the actual process. Monitor it until it's finished.
+        The thread are unaware if a job has been stopped or not."""
+        #setup the log file
+        if self.job.name is not None:
+            log_file_name=os.path.join(default_queue_jobs_dir,self.job.name+'.log')
+            formatter=logging.Formatter('%(levelname)s %(message)s')
+            formatter=logging.Formatter('%(message)s')
+            utils_logging.init_logging(output_level=None,log_file_name=log_file_name,
+                               overwrite=True, logger_name=self.job.name,formatter=formatter)
+            self.job.log_file=log_file_name
+        #start the process in a shell
+        self.job.date_start=time.strftime(default_time_Format)
+        #logging.debug('Job %s will start'%self.job)
+        process=utils_commands._launchCommand_no_wait(self.job.command, self.job.name, cwd=self.job.curr_dir)
+        #logging.debug('Job %s started'%self.job)
+        self.job.status=STATUS_RUNNING
+        self.job.pid=process.pid
+        self.job_queue.add_job_2_db(self.job,table_name=default_running_table_name)
+        return_state=process.wait()
+        self.job.return_code=return_state
+        if self.job.return_code==0:
+            self.job.status=STATUS_DONE
+        elif self.job.return_code==-15 or self.job.return_code==-9 :
+            self.job.status=STATUS_KILLED
+        else:
+            self.job.status=STATUS_FAILED
+        self.job.date_end=time.strftime(default_time_Format)
+        self.job_queue._remove_job_from_table(self.job,table_name=default_running_table_name)
+        self.job_queue.add_job_2_db(self.job,table_name=default_finished_table_name)
+        #logging.info('Finished run %s'%self.job)
+
+def start_deamon(job_queue):
+    """Start the jobs in different threads. If the deamon is already running does nothing."""
+    if job_queue.is_running():
+        #logging.error('Deamon is already running')
+        pass
+    else:
+        logging.debug('Start Deamon')
+        pid = os.fork() #Fork a first process to avoid closing the current process
+        if pid > 0:
+            return
+        else:
+            daemonize()
+            job_queue.set_pid(os.getpid())
+            maximum_nb_thread=job_queue.get_max_nb_thread()
+            length_job_queue=len(job_queue)
+            nb_running_jobs=job_queue.get_nb_running_jobs()
+            while length_job_queue>0 or nb_running_jobs>0:
+                #thread_to_start=min(length_job_queue, maximum_nb_thread-nb_running_jobs)
+                #if thread_to_start>0:
+                list_jobs=job_queue.get_N_first_prioratized_jobs_from_db(N=maximum_nb_thread, delete=True,
+                                                                         order_by='priority, date_submited')
+                if len(list_jobs) > 0:
+                    logging.debug("Run %s jobs"%len(list_jobs))
+                    for job in list_jobs:
+                        if job.status==STATUS_PAUSED:
+                            restart_one_job(job_queue, job)
+                        else:
+                            thread=Threaded_process_job(job_queue, job)
+                            thread.start()
+                        time.sleep(1)
+                else:
+                    logging.debug('wait for %s sec'%time_gap)
+                    time.sleep(time_gap)
+                    maximum_nb_thread=job_queue.get_max_nb_thread()
+                length_job_queue=len(job_queue)
+                nb_running_jobs=job_queue.get_nb_running_jobs()
+                
+            logging.debug("Everything's done change the pid and return")
+            job_queue.set_done()
+
+def update_jobs(job_queue, job_ids=[], user=None, priority=None):
+    if priority is not None:
+        if len(job_ids)==0 and user is None:
+            all_jobs=[]
+        else:
+            all_jobs=job_queue.get_jobs_from_db(table_name=default_pending_table_name,
+                                                job_ids=job_ids, user=user)
+        job_ids_tmp=[]
+        for job in all_jobs:
+            job_ids_tmp.append(job.job_id)
+        job_queue.remove_jobs_from_db(job_ids=job_ids_tmp)
+        
+        for job in all_jobs:
+            job.priority=priority
+            job_queue.add_job_2_db(job,table_name=default_pending_table_name)
+
+def remove_jobs(job_queue, job_ids=[], user=None):
+    """Remove one or several jobs from the database and stop them if necessary"""
+    if len(job_ids)==0 and user is None:
+        all_jobs=[]
+    else:
+        all_jobs=job_queue.get_jobs_from_db(table_name=default_pending_table_name,
+                                            job_ids=job_ids, user=user)
+        all_jobs.extend(job_queue.get_jobs_from_db(table_name=default_running_table_name,
+                                            job_ids=job_ids, user=user))
+    job_queue.remove_jobs_from_db(job_ids=job_ids, user=user)
+    
+    all_jobs2=[]
+    for job in all_jobs:
+        timeout=0
+        if job.status==STATUS_RUNNING:
+            kill_one_job(job.pid)
+            new_job=None
+            while new_job is None and timeout<10:
+                new_jobs_array=job_queue.get_jobs_from_db(table_name=default_finished_table_name,
+                                                   job_ids=[job.job_id])
+                if len(new_jobs_array)==1:
+                    new_job=new_jobs_array[0]
+                    job_queue.remove_jobs_from_db(table_name=default_finished_table_name,
+                                                  job_ids=[job.job_id])
+                else:
+                    new_job=None
+                time.sleep(1)
+                timeout+=1
+            if timeout>=10:
+                new_job=job
+            all_jobs2.append(new_job)
+        else:
+            all_jobs2.append(job)
+    for job in all_jobs2:
+        job.status=STATUS_CANCEL
+        job_queue.add_job_2_db(job,table_name=default_finished_table_name)
+
+
+def kill_one_job(pid):
+    """Kill one process with the specified pid."""
+    command='ps fax | grep %s'%pid
+    line,process=utils_commands.get_output_stream_from_command(command).readline()
+    if line:
+        command="kill %s"%pid
+        return_code=utils_commands.launchCommandLocally(command)
+        if not return_code==0:
+            command="kill -9 %s"%pid
+            return_code=utils_commands.launchCommandLocally(command)
+    else:
+        logging.warning("pid %s doesn't exist")
+
+def pause_one_job(job_queue, job):
+    """Pause one process (and all its children) using kill -STOP."""
+    command='ps fax | grep %s'%job.pid
+    line,process=utils_commands.get_output_stream_from_command(command).readline()
+    if line:
+        command="kill -STOP %s"%job.pid
+        return_code=utils_commands.launchCommandLocally(command)
+    job.status=STATUS_PAUSED
+    job_queue.remove_jobs_from_db(job_ids=[job.job_id])
+    job_queue.add_job_2_db(job,table_name=default_pending_table_name)
+            
+def restart_one_job(job_queue, job):
+    """Restart one process (and all its children) using kill -CONT."""
+    command='ps fax | grep %s'%job.pid
+    line,process=utils_commands.get_output_stream_from_command(command).readline()
+    if line:
+        command="kill -CONT %s"%job.pid
+        return_code=utils_commands.launchCommandLocally(command)
+    job.status=STATUS_RUNNING
+    job_queue.remove_jobs_from_db(job_ids=[job.job_id])
+    job_queue.add_job_2_db(job,table_name=default_running_table_name)
+
+
+def stop_all_jobs(job_queue):
+    """Stop all jobs including the deamon."""
+    all_jobs=job_queue.get_jobs_from_db(table_name=default_running_table_name)
+    job_ids=[]
+    for job in all_jobs:
+        job_ids.append(job.job_id)
+        remove_jobs(job_queue, job_ids)
+    
+    job_queue.set_done()
+
+def prepare_jobs_from_file(open_file, **kwargs):
+    """
+    This method load the job into the database and set the specified action
+    keyword argument accepted are:
+    @keyword database_file: The file use to create the database
+    @keyword recreate: boolean specifying if the database need to be reinitialised
+    @keyword action: one of the action to take @see COMMAND_TYPE
+    @keyword maximum_nb_thread: the maximum number of process allowed two run
+    @keyword name: The name to be given to this set of processes
+    @keyword priority: The priority to be given to this set of processes
+    @keyword job_ids: An array of id to restrict the jobs viewed or deleted
+    @keyword user: An user to restrict the jobs viewed or deleted
+    @keyword column_headers: An array of header to format the jobs viewed
+    """
+    #That piece set the maximum number of thread for the deamon (that could already be running) 
+    #It also initialise the connection to the database
+    database_file=kwargs.get('database_file', None)
+    recreate=kwargs.get('recreate', None)
+    maximum_nb_thread=kwargs.get('maximum_nb_thread', None)
+    if recreate:
+        job_queue=JobPriorityQueue(maximum_nb_thread, database_file)
+        stop_all_jobs(job_queue)
+    job_queue=JobPriorityQueue(maximum_nb_thread, database_file, recreate=recreate)
+    
+    #That piece load the command provided into the database
+    list_command_name={}
+    job_name=kwargs.get('name', None)
+    curr_dir=os.path.abspath(os.curdir)
+    if open_file is not None:
+        priority= kwargs.get('priority', 50)
+        for line in open_file:
+            if line.strip()=='':
+                pass
+            elif line.strip().startswith('#'):
+                continue
+            else:
+                if job_name==None:
+                    sp_line=line.split()
+                    name=os.path.basename(sp_line[0])
+                    if len(sp_line)>1:
+                        name='%s_%s'%(name,os.path.basename(sp_line[1]))
+                else:
+                    name=job_name
+                if list_command_name.has_key(name):
+                    list_command_name[name]+=1
+                    name='%s_%s'%(name,list_command_name.get(name))
+                else:
+                    list_command_name[name]=0
+                job=Job(line.strip(), name, priority, curr_dir=curr_dir)
+                job_queue.add_job_2_db(job)
+                print 'job %s id=%s was added to the queue with priority=%s'%(job.name,job.job_id, job.priority)
+                name=None
+    
+    #Get the provided action and execute it
+    action=kwargs.get('action',COMMAND_RUN)
+    job_ids=kwargs.get('job_ids',[])
+    user=kwargs.get('user',None)
+    #That piece run or list the content of the database  
+    if action==COMMAND_RUN:
+        start_deamon(job_queue)
+    elif action==COMMAND_LIST:
+        column_headers=kwargs.get('column_headers', default_column_header)
+        all_jobs=[]
+        all_jobs=job_queue.get_jobs_from_db(job_ids=job_ids, user=user, order_by='id', reverse_order=True)
+        out = formatListJobs(all_jobs, column_headers)
+        process=subprocess.Popen('less -S --buffer=1024', stdin=subprocess.PIPE, shell=True)
+        try:
+            process.communicate(input=out)
+        except IOError:
+            pass
+    elif action==COMMAND_STOP:
+        stop_all_jobs(job_queue)
+    elif action==COMMAND_DEL:
+        remove_jobs(job_queue, job_ids=job_ids, user=user)
+    elif action==COMMAND_CHANGE:
+        priority= kwargs.get('priority', None)
+        update_jobs(job_queue, job_ids, user, priority)
+        
+
+def parse_column_header(header_string):
+    """This method parse the column header argument from the command line.
+    It returns a array of verified column header or None if an error occurred."""
+    invalid=False
+    column_headers=[]
+    tmp=header_string.split()
+    for i in range(len(tmp)):
+        column_headers.extend(tmp[i].strip().split(','))
+    for header in column_headers:
+        if header=='simple':
+            column_headers=simple_column_header
+            break
+    final_headers=[]
+    for header in column_headers:
+        if header:
+            if header not in default_column_header:
+                logging.error('%s is not a valid header '%header)
+                invalid=True
+            else:
+                final_headers.append(header)
+    if invalid:
+        return None
+    else:
+        return final_headers
+
+def parse_job_id(job_ids_string):
+    invalid=False
+    job_ids_list=[]
+    tmp=job_ids_string.split()
+    for i in range(len(tmp)):
+        job_ids_list.extend(tmp[i].strip().split(','))
+        
+    final_job_ids_list=[]
+    for job_id in job_ids_list:
+        if job_id:
+            if job_id.isdigit():
+                final_job_ids_list.append(int(job_id))
+            else:
+                if len(job_id.split('-'))==2:
+                    a,b= job_id.split('-')
+                    if a.isdigit() and b.isdigit() and int(a)<=int(b):
+                        final_job_ids_list.extend(range(int(a),int(b)+1))
+                    else:
+                        logging.error('%s is not a valid job id '%job_id)
+                        invalid=True
+                else:
+                    logging.error('%s is not a valid job id '%job_id)
+                    invalid=True
+    if invalid:
+        return None
+    else:
+        return final_job_ids_list
+    
+    
+
+def main():
+    #initialise the logging
+    utils_logging.init_logging()
+    #utils_logging.init_logging(logging.DEBUG)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,dummy) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    if options.commands_file:
+        open_file=utils_logging.open_input_file(options.commands_file)
+        if options.action is None:
+            options.action=COMMAND_RUN
+    else:
+        open_file=None
+        
+    if options.format is not None:
+        column_headers=parse_column_header(options.format)
+        
+        if column_headers is None:
+            sys.exit()
+    else:
+        column_headers=default_column_header
+        
+    if options.job_id:
+        job_ids_list=parse_job_id(options.job_id)
+        if job_ids_list is None:
+            sys.exit()
+    else:
+        job_ids_list=None
+    
+    if options.change_default_dir is not None:
+        global default_queue_jobs_dir
+        default_queue_jobs_dir=os.path.abspath(os.path.expanduser(options.change_default_dir))
+        global default_db_file
+        default_db_file=os.path.join(default_queue_jobs_dir,'commands_store.sqlite')
+        
+    if not os.path.exists(default_queue_jobs_dir):
+        os.makedirs(default_queue_jobs_dir)
+    utils_logging.init_logging(file_level=logging.DEBUG, log_file_name=default_db_file+'.log',
+                               formatter=logging.Formatter('%(levelname)s {%(asctime)s}: %(message)s'),
+                               overwrite=options.recreate)
+    prepare_jobs_from_file(open_file, maximum_nb_thread=options.maximum, action=options.action,
+                           recreate=options.recreate, column_headers=column_headers,name=options.name,
+                           priority=options.priority, job_ids=job_ids_list)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script creates up to m different thread and launches each command in a separate thread.
+When one command is finished another takes its place within a maximum of %s seconds."""%time_gap
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-c","--commands",dest="commands_file",type="string",
+                         help="Path to a file where the commands data are located. PIPE keyword can be given to take the command from stdin. Default: %default")
+    optparser.add_option("-m","--maximum",dest="maximum",type="int", default=None,
+                         help="Maximum number of command launch at a given time. Default: %default")
+    optparser.add_option("-a","--action",dest="action",type="string",
+                         help="Provide the action that the script should take. Should be one of "+", ".join(COMMAND_TYPE)+" Default: %default")
+    optparser.add_option("-r","--recreate",dest="recreate",action="store_true",default=False,
+                         help="Recreate the database before doing anything else. This will remove any job pending or finished. Default: %default")
+    optparser.add_option("-f","--format",dest="format",type="string",default='simple',
+                         help="""When use with the action %s the format option allows you to select
+which column you want to see appear in the output. parameter should a comma separated list of header name 
+that can be one of %s. Default: %%default"""%(COMMAND_LIST,", ".join(default_column_header)))
+    optparser.add_option("-n","--name",dest="name",type="string",
+                         help="""The name of that (set of) command(s). if several command are submitted a number will be added to the name.
+In any case an id is always added to the name. Default: %default""")
+    optparser.add_option("-p","--priority",dest="priority",type="int",default=50,
+                         help="""The priority of that (set of) command(s). Lower priority will come first. Default: %default""")
+    optparser.add_option("-j","--job_id",dest="job_id",type="string",
+                         help="""one or several specific job id that you want to list or delete.
+You can specify several in a comma separated list or space separated list if double quoted Default: %default""")
+    optparser.add_option("--change_default_dir",dest="change_default_dir",type="string",
+                         help="""Change the default directory where the database is located. Default: %default""")
+    
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    if options.commands_file and not utils_param.check_input_file(options.commands_file, pipe_allowed=True):
+        logging.error('File not found: %s does not exist'%(options.commands_file))
+        arg_pass=False
+    if options.action and options.action not in COMMAND_TYPE:
+        logging.error('action %s not valid: use action from %s'%(options.action, ' ,'.join(COMMAND_TYPE)))
+        arg_pass=False
+    return arg_pass
+    
+
+
+if __name__=="__main__":
+    main()
+
+    
+    
+     

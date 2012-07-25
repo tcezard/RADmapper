@@ -1,0 +1,160 @@
+'''
+Created on Nov 8, 2010
+
+@author: tcezard
+'''
+from wiki_communication.wiki_ids import get_run_id_from_page_title
+from wiki_communication import get_wiki_run, get_wiki_project
+from utils import split_thousands, utils_logging
+from utils.utils_param import get_pipeline_places
+import utils
+import os
+from utils.utils_commands import shellize_file_name
+import logging
+from optparse import OptionParser
+import sys
+
+
+def run_summary(run_page_titles):
+    out=[]
+    template = '| [%s|%s] -- %s | %s | %s| [%s|%s] | %s -- %s | %s | %s | %s | %s | TC | |' 
+    header = '|| Run || lane || index || Project no. || sample IDs  || NB read in this run || usable || NB reads total || Comments || Who || Actioned by ||'
+    for run_page_title in run_page_titles:
+        run_id = get_run_id_from_page_title(run_page_title)
+        run = get_wiki_run(run_id)
+        for run_element in run.get_run_elements():
+            project = run_element.get_project()
+            sample = run_element.get_sample()
+            usable_str = 'yes'
+            if not run_element.is_usable():
+                usable_str='no'
+            if project and sample:
+                run_date = run.id.split('_')[0]
+                out.append(template%(run_date, run.get_run_page_title(), run.get_illumina_instrument(), run_element.get_lane_number(),
+                                     run_element.get_index(), project.get_project_page_title(), project.get_project_page_title(),
+                                     sample.id, sample.get_external_id(), split_thousands(run_element.get_nb_reads()), usable_str, 
+                                     split_thousands(sample.get_nb_reads()), run_element.get_comments()))
+    out.sort()
+    print header
+    print '\n'.join(out)
+    
+def is_raw_data_posted(project):
+    pipeline_places = get_pipeline_places()
+    webserver_dir = pipeline_places.get_webserver_dir()
+    server,parent_dest_dir = webserver_dir.split(':')
+    
+    project_dir=os.path.join(parent_dest_dir,shellize_file_name(project.get_project_page_title()))
+    raw_reads_dir = os.path.join(project_dir,'raw_reads')
+    partial_copy = utils.checkFile(raw_reads_dir, server)
+    full_copy = partial_copy
+    for sample in project.get_samples():
+        sample_dir=os.path.join(raw_reads_dir,shellize_file_name(sample.get_external_id()))
+        full_copy = full_copy and utils.checkFile(sample_dir, server=server)
+        if not full_copy:
+            break
+        
+        solexa_fastq_files = []
+        for run_element in sample.get_run_elements():
+            
+            if run_element.is_usable():
+                if run_element.run.is_single_end():
+                    solexa_fastq_files.append(os.path.join(sample_dir, run_element.id+'.solfastq.gz'))
+                else:
+                    solexa_fastq_files.append(os.path.join(sample_dir, run_element.id+'_1.solfastq.gz'))
+                    solexa_fastq_files.append(os.path.join(sample_dir, run_element.id+'_2.solfastq.gz'))
+        for solexa_fastq_file in solexa_fastq_files:
+            full_copy = full_copy and utils.checkFile(solexa_fastq_file, server=server)
+            if not full_copy:
+                break
+    return full_copy
+
+def samples_summary(project):
+    
+    for sample in project.get_samples():
+        print '%s\t%s\t%s'%(sample.id, sample.get_external_id(), sample.get_nb_reads())
+
+def project_summary(project_ids):
+    pipeline_places = get_pipeline_places()
+    webserver_dir = pipeline_places.get_webserver_dir()
+    server,parent_dest_dir = webserver_dir.split(':')
+    
+    for project_id in project_ids:
+        project = get_wiki_project(project_id)
+        #if is_raw_data_posted(project):
+        #    print project
+        samples_summary(project)
+        
+
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    run_pages=[]
+    if options.run_page_title:
+        run_pages.append(options.run_page_title)
+        if len(args):
+            run_pages.extend(args)
+    if len(run_pages)>0:
+        run_summary(run_pages)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script is a template to of a python script that include help and option's checking.
+    The requirement and assumption of the script can be described here.
+    A link to another documentation can also be added here."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-r","--run_page_title",dest="run_page_title",type="string",
+                         help="Title of the run page that you want to summarise. Default: %default")
+    optparser.add_option("-p","--project",dest="project",type="string",
+                         help="Project number that you want to summarise. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.run_page_title and not options.project:
+        logging.error("You must specify a run page title or a project number.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()
+
+         
+    
+        
+if __name__ == '1__main__':
+    project_ids=[2010053]
+    project_summary(project_ids)
+
+if __name__ == '1__main__':
+    utils_logging.init_logging(logging.DEBUG)
+    run_page_titles = ['101013_HWUSI-EAS243L_00001_62C6DAAXX','101015_HWUSI-EAS721_00013_62C1LAAXX',
+                       '101022_HWI-EAS222_00037_62C6EAAXX', '101025_HWUSI-EAS243L_00002_62JARAAXX']
+    #run_page_titles = ['101011_HWI-EAS222_00036_621T8AAXX']
+    run_summary(run_page_titles)
+    
+    
+    

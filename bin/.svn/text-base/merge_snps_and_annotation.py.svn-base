@@ -1,0 +1,331 @@
+'''
+Created on Mar 3, 2011
+
+@author: tcezard
+'''
+from utils import utils_logging
+from annotate_snv import read_line_indel_vcf
+from optparse import OptionParser
+import logging
+import command_runner
+import utils
+import sys
+
+ANNOTATION_FILE_TYPE_VARIANT_EFFECT_PREDICTOR='var'
+ANNOTATION_FILE_TYPE_NGS_SNP='NGS-SNP'
+ANNOTATION_FILE_TYPE_SNPEFF='SnpEff'
+ANNOTATION_FILE_TYPE=[ANNOTATION_FILE_TYPE_VARIANT_EFFECT_PREDICTOR,
+                      ANNOTATION_FILE_TYPE_NGS_SNP,ANNOTATION_FILE_TYPE_SNPEFF]
+
+def load_vcf_file_for_NGS_SNP(vcf_file):
+    open_file = utils_logging.open_input_file(vcf_file, pipe=True)
+    all_snps={}
+    comments=[]
+    for line in open_file:
+        if line.startswith('#'):
+            comments.append(line.strip())
+            continue
+        (chr, coordinate, ref_base, final_alleles)=read_line_indel_vcf(line.strip().split())
+        for final_allele in final_alleles:
+            all_snps['%s_%s_%s_%s'%(chr, coordinate, ref_base, final_allele)] = line.strip()
+    open_file.close()
+    logging.info('%s snps loaded'%(len(all_snps)))
+    return comments,all_snps
+
+def load_vcf_file_for_variant_effect_predictor(vcf_file):
+    open_file = utils_logging.open_input_file(vcf_file, pipe=True)
+    all_snps={}
+    comments=[]
+    for line in open_file:
+        if line.startswith('#'):
+            comments.append(line.strip())
+            continue
+        sp_line = line.strip().split()
+        chr = sp_line[0]
+        position = int(sp_line[1])
+        id = sp_line[2]
+        ref = sp_line[3]
+        all_alt = sp_line[4]
+        
+        if id == '.':
+            all_alt_trimmed=[]
+            indel=False
+            #assuming indels comes from samtools
+            for alt in all_alt.split(','):
+                if len(ref) > 1 or len(alt) > 1 or indel:
+                    indel=True
+                    alt = alt.upper()[1:]
+                    if len(alt) == 0:
+                        alt='-'
+                    all_alt_trimmed.append(alt)
+                else:
+                    all_alt_trimmed.append(alt)
+            if indel:
+                position+=1
+                ref = ref.upper()[1:]
+                if len(ref) == 0:
+                    ref='-'
+            id ='%s_%s_%s/%s'%(chr.replace('chr',''),position, ref,'/'.join(all_alt_trimmed))
+            all_snps[id] = line.strip()
+    open_file.close()
+    logging.info( '%s snps loaded'%(len(all_snps)))
+    return comments,all_snps
+
+
+
+def merge_snps_and_annotation_from_NGS_SNP(vcf_file, annotation_file, output_file='PIPE'):
+    annotation_file_header={}
+    #annotation_file_header['#Reference']=1
+    #annotation_file_header['Position']=2
+    #annotation_file_header['Base_In_Reference']=3
+    #annotation_file_header['Base_In_Reads']=4
+    annotation_file_header['Functional_Class']=5
+    #annotation_file_header['Chromosome']=6
+    #annotation_file_header['Chromosome_Position']=7
+    #annotation_file_header['Chromosome_Strand']=8
+    #annotation_file_header['Chromosome_Reference']=9
+    #annotation_file_header['Chromosome_Reads']=10
+    annotation_file_header['Gene_Description']=11
+    annotation_file_header['Ensembl_Gene_ID']=12
+    annotation_file_header['Entrez_Gene_Name']=13
+    annotation_file_header['Entrez_Gene_ID']=14
+    annotation_file_header['Ensembl_Transcript_ID']=15
+    annotation_file_header['Transcript_SNP_Position']=16
+    #annotation_file_header['Transcript_SNP_Reference']=17
+    #annotation_file_header['Transcript_SNP_Reads']=18
+    annotation_file_header['Transcript_To_Chromosome_Strand']=19
+    annotation_file_header['Ensembl_Protein_ID']=20
+    annotation_file_header['UniProt_ID']=21
+    annotation_file_header['Amino_Acid_Position']=22
+    #annotation_file_header['Is_Correlated_Orthologues']=23
+    #annotation_file_header['Is_Correlated_Family']=24
+    annotation_file_header['Overlapping_Protein_Domains']=25
+    annotation_file_header['Overlapping_Protein_Features']=26
+    annotation_file_header['Amino_Acid_Reference']=27
+    annotation_file_header['Amino_Acid_Reads']=28
+    annotation_file_header['Amino_Acids_In_Orthologues']=29
+    annotation_file_header['Alignment_Score_Change']=30
+    annotation_file_header['C_blosum']=31
+    annotation_file_header['C_ident']=32
+    annotation_file_header['Context_Conservation']=33
+    annotation_file_header['Orthologue_Species']=34
+    annotation_file_header['Gene_Ontology']=35
+    annotation_file_header['Model_Annotations']=36
+    annotation_file_header['Ref_SNPs']=37
+    annotation_file_header['Is_Fully_Known']=38
+    open_output = utils_logging.open_output_file(output_file, pipe=True)
+
+    comments, all_snps = load_vcf_file_for_NGS_SNP(vcf_file)
+    open_file = utils_logging.open_input_file(annotation_file, pipe=False)
+    entry_found=set()
+    columns=[]
+    headers=[]
+    for line in open_file:
+        #chr1    13273   G       C       WITHIN_NON_CODING_GENE  1       13273   forward G
+        if line.startswith('#'):
+            columns=[]
+            headers=[]
+            for pos,element in enumerate(line.strip().split()):
+                if annotation_file_header.has_key(element):
+                    columns.append(pos)
+                    headers.append(element)
+            continue
+        
+        sp_line = line.strip().split('\t')
+        id='%s_%s_%s_%s'%(sp_line[0], sp_line[1], sp_line[2], sp_line[3])
+        snps_line = all_snps.get(id)
+        
+        if snps_line:
+            out=[]
+            for pos in columns:
+                out.append(sp_line[pos])
+            entry_found.add(id)
+            
+            open_output.write( '%s\t%s'%(all_snps.get(id),'\t'.join(out)))
+        else:
+            logging.error('%s is not found in the vcf file.'%(id))
+        open_output.close()
+    
+def merge_snps_and_annotation_from_SnpEff(vcf_file, annotation_file, output_file='PIPE'):
+    annotation_file_header={}
+    #annotation_file_header['# Chromo']=0
+    #annotation_file_header['Position']=1
+    #annotation_file_header['Reference']=2
+    #annotation_file_header['Change']=3
+    #annotation_file_header['Change_type']=4
+    #annotation_file_header['Homozygous']=5
+    #annotation_file_header['Quality']=6
+    #annotation_file_header['Coverage']=7
+    #annotation_file_header['Warnings']=8
+    annotation_file_header['Gene_ID']=9
+    annotation_file_header['Gene_name']=10
+    annotation_file_header['Bio_type']=11
+    annotation_file_header['Trancript_ID']=12
+    annotation_file_header['Exon_ID']=13
+    annotation_file_header['Exon_Rank']=14
+    annotation_file_header['Effect']=15
+    annotation_file_header['old_AA/new_AA']=16
+    annotation_file_header['Old_codon/New_codon']=17
+    annotation_file_header['Codon_Num(CDS)']=18
+    annotation_file_header['Codon_Degeneracy']=19
+    annotation_file_header['CDS_size']=20
+    annotation_file_header['Codons_around']=21
+    annotation_file_header['AAs_around']=22
+    annotation_file_header['Custom_interval_ID']=23
+
+
+    open_output = utils_logging.open_output_file(output_file, pipe=True)
+
+    comments, all_snps = load_vcf_file_for_NGS_SNP(vcf_file)
+    open_file = utils_logging.open_input_file(annotation_file, pipe=False)
+    entry_found=set()
+    columns=[]
+    headers=[]
+    for line in open_file:
+        #chr1    13273   G       C       WITHIN_NON_CODING_GENE  1       13273   forward G
+        if line.startswith('#'):
+            columns=[]
+            headers=[]
+            for pos,element in enumerate(line.strip().split('\t')):
+                if annotation_file_header.has_key(element):
+                    columns.append(pos)
+                    headers.append(element)
+            continue
+        
+        sp_line = line.strip().split('\t')
+        id='%s_%s_%s_%s'%(sp_line[0], sp_line[1], sp_line[2], sp_line[3])
+        snps_line = all_snps.get(id)
+        
+        if snps_line:
+            out=[]
+            for pos in columns:
+                if pos<len(sp_line):
+                    out.append(sp_line[pos])
+                else:
+                    out.append("")
+            entry_found.add(id)
+            #print '\t'.join(["%s"%val for val in columns])
+            #print '\t'.join(headers)
+            #print line.strip()
+            #print '\t'.join(out)
+            open_output.write( '%s\t%s\n'%(all_snps.get(id),'\t'.join(out)))
+        else:
+            logging.error('%s is not found in the vcf file.'%(id))
+    open_output.close()
+    
+    
+
+        
+def merge_snps_and_annotation_from_variant_effect_predictor(vcf_file, annotation_file, output_file='PIPE'):
+    annotation_file_header={}
+    #annotation_file_header['Uploaded Variation']=1
+    #annotation_file_header['Location']=2
+    annotation_file_header['Gene']=3
+    annotation_file_header['Transcript']=4
+    annotation_file_header['Consequence']=5
+    annotation_file_header['Position in cDNA']=6
+    annotation_file_header['Position in protein']=7
+    annotation_file_header['Amino acid change']=8
+    annotation_file_header['Corresponding Variation']=9
+    #Uploaded Variation      Location        Gene    Transcript      Consequence     Position in cDNA
+    #Position in protein     Amino acid change       Corresponding Variation
+    open_output = utils_logging.open_output_file(output_file, pipe=True)
+    comments, all_snps = load_vcf_file_for_variant_effect_predictor(vcf_file)
+    open_file = utils_logging.open_input_file(annotation_file, pipe=False)
+    entry_found=set()
+    columns=[]
+    headers=[]
+    line = open_file.readline()
+    for pos,element in enumerate(line.strip().split('\t')):
+        if annotation_file_header.has_key(element):
+            columns.append(pos)
+            headers.append(element)
+    for line in open_file:
+        sp_line = line.strip().split('\t')
+        id=sp_line[0]
+        snps_line = all_snps.get(id)
+        
+        if snps_line:
+            out=[]
+            for pos in columns:
+                out.append(sp_line[pos])
+            entry_found.add(id)
+            open_output.write( '%s\t%s\n'%(all_snps.get(id),'\t'.join(out)))
+        else:
+            logging.error('%s is not found in the vcf file.'%(id))
+    open_output.close()
+    
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    command_runner.set_command_to_run_localy()
+    if options.type==ANNOTATION_FILE_TYPE_NGS_SNP:
+        merge_snps_and_annotation_from_NGS_SNP(options.snp_file, options.annotation_file, options.output_file)
+    elif options.type==ANNOTATION_FILE_TYPE_VARIANT_EFFECT_PREDICTOR:
+        merge_snps_and_annotation_from_variant_effect_predictor(options.snp_file, options.annotation_file, options.output_file)
+    elif options.type==ANNOTATION_FILE_TYPE_SNPEFF:
+        merge_snps_and_annotation_from_SnpEff(options.snp_file, options.annotation_file, options.output_file)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script merge a snps file in vcf format with annotation from NGS_SNP or variant_effect_predictor."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-s","--snp_file",dest="snp_file",type="string",
+                         help="A file containing the snps in vcf format. Default: %default")
+    optparser.add_option("-a","--annotation_file",dest="annotation_file",type="string",
+                         help="The file containing the annotation from either variant_effect_predictor or NGS_SNP. Default: %default")
+    optparser.add_option("-o","--output_file",dest="output_file",type="string",default='PIPE',
+                         help="The file where the merged line are output.. Default: %default")
+    optparser.add_option("-t","--type",dest="type",type="string",default=ANNOTATION_FILE_TYPE_NGS_SNP,
+                         help="type of annotation_file provided, one of "+' or '.join(ANNOTATION_FILE_TYPE)+". Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.snp_file:
+        logging.error("You must specify a snp file.")
+        arg_pass=False
+    if not options.annotation_file:
+        logging.error("You must specify a annotation file.")
+        arg_pass=False
+    return arg_pass
+
+      
+if __name__=='1__main__':
+    vcf_file = '/home/tcezard/projects/2010142_Sahota_Surinder/2010_SOL_SS341__SS1/analysis/2010_SOL_SS341_GATK_snps_cov10.vcf'
+    annotation_file = '/home/tcezard/projects/2010142_Sahota_Surinder/2010_SOL_SS341__SS1/analysis/2010_SOL_SS341_GATK_snps_cov10_NGS_SNP.anno'
+    merge_snps_and_annotation_from_NGS_SNP(vcf_file, annotation_file)
+    
+if __name__=='1__main__':
+    vcf_file = '/home/tcezard/projects/2010142_Sahota_Surinder/2010_SOL_SS341__SS1/analysis/2010_SOL_SS341_GATK_snps_cov10.vcf'
+    annotation_file = '/home/tcezard/projects/2010142_Sahota_Surinder/2010_SOL_SS341__SS1/analysis/2010_SOL_SS341_GATK_snps_cov10_anno.vcf'
+    vcf_file = '/home/tcezard/projects/2010142_Sahota_Surinder/2010_SOL_SS341__SS1/analysis/2010_SOL_SS341_samtools_indels_cov10.vcf'
+    #vcf_file = '/home/tcezard/projects/2010142_Sahota_Surinder/test.vcf'
+    annotation_file = '/home/tcezard/projects/2010142_Sahota_Surinder/2010_SOL_SS341__SS1/analysis/2010_SOL_SS341_samtools_indels_cov10_anno2.vcf'
+    #annotation_file = '/home/tcezard/projects/2010142_Sahota_Surinder/test.anno2.vcf'
+    merge_snps_and_annotation_from_variant_effect_predictor(vcf_file, annotation_file)
+    
+
+if __name__=='__main__':
+    main()

@@ -1,0 +1,103 @@
+'''
+Created on 9 Sep 2010
+
+@author: tcezard
+'''
+import utils
+import os
+from utils import utils_param, utils_logging
+import command_runner
+from optparse import OptionParser
+import logging
+import sys
+
+
+def remove_duplicate(input_bam, sorted=False, overwrite=False):
+    pipeline_param = utils_param.get_pipeline_parameters()
+    picard_dir = pipeline_param.get_picard_dir()
+    run_fine = False
+    if picard_dir:
+        output_dir=os.path.dirname(input_bam)
+        output_name, dummy=os.path.splitext(os.path.basename(input_bam))
+        if not sorted:
+            
+            sorted_bam = os.path.join(output_dir,output_name+'_sorted.bam')
+            utils.sort_bam_file_per_coordinate(picard_dir, input_bam, sorted_bam,overwrite=overwrite)
+        else:
+            sorted_bam=input_bam
+        if sorted_bam:
+            mark_dups_jar = os.path.join(picard_dir, 'MarkDuplicates.jar')
+            mark_dups_bam = os.path.join(output_dir, output_name+'_mrk_dup.bam')
+            mark_dups_metric = os.path.join(output_dir, output_name+'_mrk_dup.metric')
+            command = 'java -Xmx5G -jar %s I=%s O=%s METRICS_FILE=%s  VALIDATION_STRINGENCY=LENIENT MAX_FILE_HANDLES_FOR_READ_ENDS_MAP=100'%(mark_dups_jar, sorted_bam, mark_dups_bam, mark_dups_metric)
+            
+            if not utils.checkFile(mark_dups_bam) or overwrite:
+                return_code = command_runner.run_command(command)
+            else:
+                logging.warning('%s already exists use -f to overwrite'%mark_dups_bam)
+                return_code=1
+                
+            if return_code==0:
+                run_fine=True
+            #    command = 'rm -f %s'%sorted_bam
+            #    return_code = command_runner.run_command(command)
+
+    return run_fine
+
+
+def main():
+    #initialize the logging
+    utils_logging.init_logging(logging.INFO)
+    #Setup options
+    optparser=_prepare_optparser()
+    (options,args) = optparser.parse_args()
+    #verify options
+    arg_pass=_verifyOption(options)
+    if not arg_pass:
+        logging.warning(optparser.get_usage())
+        logging.critical("Non valid arguments: exit")
+        sys.exit(1)
+    if options.print_commands:
+        utils_logging.change_log_stdout_to_log_stderr()
+    else:
+        command_runner.set_command_to_run_localy()
+    remove_duplicate(options.bam_file, sorted = options.sorted, overwrite = options.overwrite)
+
+
+def _prepare_optparser():
+    """Prepare optparser object. New options will be added in this
+    function first.
+    """
+    usage = """usage: %prog <-i input> <-o outputPath> [-q quality -f]"""
+    description = """This script is mark duplicate from bam file."""
+    
+    prog_version=utils.getWtss_version()
+    optparser = OptionParser(version="%prog of wtss_pipeline v"+prog_version,description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
+    optparser.add_option("-b","--bam",dest="bam_file",type="string",
+                         help="A bam file to use for duplicate removing. Default: %default")
+    optparser.add_option("-s","--sorted",dest="sorted",action="store_true",default=False,
+                         help="This flag makes the script assume that the bam files are sorted by coordinate. Default: %default")
+    optparser.add_option("-f","--overwrite",dest="overwrite",action="store_true",default=False,
+                         help="This flag makes the script overwrite any existing file. Default: %default")
+    optparser.add_option("--print",dest="print_commands",action='store_true',default=False,
+                         help="Print the command instead of running them. Default: %default")
+    
+    return optparser
+
+
+def _verifyOption(options):
+    """Check if the mandatory option are present in the options objects.
+    @return False if any argument is wrong."""
+    arg_pass=True
+    
+    if not options.bam_file:
+        logging.error("You must specify a bam file.")
+        arg_pass=False
+    return arg_pass
+
+
+
+if __name__=="__main__":
+    main()
+

@@ -1,0 +1,41 @@
+'''
+Created on 19 Jul 2010
+
+@author: tcezard
+'''
+from wiki_communication.project_page_parser import get_all_project_page_title,\
+    get_project_id_from_page_title
+from wiki_communication import get_wiki_project
+from wiki_communication.wiki_exceptions import Wiki_Exception
+import logging
+from utils import utils_logging
+
+
+utils_logging.init_logging(output_level=logging.ERROR)
+all_project_titles=get_all_project_page_title()
+count = {'total' : 0, 'total_454': 0 ,'active_454': 0, 'CRASH' : 0}
+for project_title in all_project_titles:
+    project_id=get_project_id_from_page_title(project_title)
+    print project_id, project_title
+    continue
+    #print project_title
+    count['total']+=1
+    try:
+        project = get_wiki_project(project_id)
+        if project.get_sequencing_platform() == '454':
+            count['total_454']+=1
+            if project.is_project_active():
+                count['active_454']+=1
+                print 'project %s is marked as active'%(project_title)
+            else:
+                print 'project %s is not marked as active'%(project_title)
+    except Wiki_Exception:
+        count['CRASH']+=1
+        logging.exception('CRASH')
+        
+print '%s out of %s 454 projects are active'%(count['active_454'], count['total_454'])
+print '%s out of %s projects crashed'%(count['CRASH'], count['total'])
+
+
+
+        
