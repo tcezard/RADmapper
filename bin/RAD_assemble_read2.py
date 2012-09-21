@@ -60,7 +60,7 @@ def run_velvet(fastq_file_name, kmer_length=29, output_dir= 'velvet', **kwarg):
 
 
 def run_velvetk(fastq_file_name, estimated_size=600, **kwarg):
-    command = "/home/tcezard/velvetk.pl --size %s --best %s 2> /dev/null"%(estimated_size, fastq_file_name)
+    command = "velvetk.pl --size %s --best %s 2> /dev/null"%(estimated_size, fastq_file_name)
     logging.info(command)
     stream,process = utils_commands.get_output_stream_from_command(command)
     kmer_length=29
@@ -185,7 +185,7 @@ def run_soapdenovo(fastq_file_name, max_read_len=101, **kwarg):
 
 def run_idba(fastq_file_name, max_read_len=101, **kwarg):
     log_file='idba_ud.log'
-    command="/ifs/software/linux_x86_64/idba_ud-1.0.9/bin/idba_ud -r %s -o idba_ud --min_contig %s --num_threads 1 2>&1 >%s"%(fastq_file_name, max_read_len,log_file)
+    command="idba_ud -r %s -o idba_ud --min_contig %s --num_threads 1 2>&1 >%s"%(fastq_file_name, max_read_len,log_file)
     return_code = command_runner.run_command(command)
     contig_files = glob('idba_ud/contig.fa')
     contig_file_name=None

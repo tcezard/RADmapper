@@ -184,7 +184,7 @@ def _prepare_optparser():
     optparser.add_option("-d","--consensus_dir",dest="consensus_dir",type="string",
                          help="Path to a directory containing fastq file (only extension .fastq will be processed). Default: %default")
     optparser.add_option("-r","--readgroup",dest="readgroup_file",type="string",default=None,
-                         help="The name of the assembler that will be used on the fastq files. Default: %default")
+                         help="The . Default: %default")
     optparser.add_option("--print",dest="print_command",action='store_true',default=False,
                          help="print the commands instead of running them. Default: %default")
     optparser.add_option("--debug",dest="debug",action='store_true',default=False,
