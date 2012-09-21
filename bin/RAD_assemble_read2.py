@@ -257,11 +257,12 @@ def get_best_assembly_merged(assembly_dir, read1_fasta, name, force_merge=False)
     
     if best_assembly is None :
         name=os.path.basename(os.path.dirname(contigs_file_to_compare[0]))
-        logging.info("Best assembly with %s: Concatenated"%name)
         best_assembly=os.path.join(assembly_dir,"merged_consensus.fa")
         if force_merge:
+            logging.info("Best assembly with %s: Force merge"%name)
             force_merge_consensus(read1_fasta, contigs_file_to_compare[0], best_assembly)
         else:
+            logging.info("Best assembly with %s: Concatenated"%name)
             concatenate_consensus([read1_fasta, contigs_file_to_compare[0]], best_assembly)
     return best_assembly
 
@@ -434,7 +435,7 @@ def run_all_fastq_files(directory,assembly_function_list,estimated_size, force_m
         name=os.path.basename(fastq_file)[:-len("_2.fastq")]
         read1_fasta=os.path.join(output_dir,name+"_1.fa")
         
-        contig_file = run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=estimated_size, read1_fasta=read1_fasta, name=name)
+        contig_file = run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=estimated_size, read1_fasta=read1_fasta, name=name, force_merge=force_merge)
         if contig_file:
             all_contig_list.append(contig_file)
         logging.info("\n")
