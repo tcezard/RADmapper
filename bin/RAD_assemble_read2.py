@@ -379,8 +379,9 @@ def force_merge_consensus(read1_consensus, read2_consensus, output_merge_file):
     array=[read1_sequence]
     fasta_reader2 = FastaReader(open_read2)
     for read2_name, read2_sequence in fasta_reader2:
+        name="%s_%s"%(name,read2_name)
         array.append("N"*100)
-        array.append(read2_consensus)
+        array.append(read2_sequence)
     open_output.write(">%s\n%s\n"%(name, ''.join(array)))
     open_read2.close()
     open_output.close()
