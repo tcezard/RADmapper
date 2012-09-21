@@ -26,6 +26,20 @@ SOAPDENOVO_ALIAS=["soap","soapdenovo"]
 IDBA_ALIAS=["idba","idba_ud"]
 NO_ASSEMBLER=["None", "no", ""]
 
+ALL_ASSEMBLERS=[]
+ALL_ASSEMBLERS.extend(VELVETOPT_ALIAS)
+ALL_ASSEMBLERS.extend(VELVET_ALIAS)
+ALL_ASSEMBLERS.extend(VELVETK_ALIAS)
+ALL_ASSEMBLERS.extend(VELVETKOPT_ALIAS)
+ALL_ASSEMBLERS.extend(VELVETKCLC_ALIAS)
+ALL_ASSEMBLERS.extend(CLC_ALIAS)
+ALL_ASSEMBLERS.extend(ABYSS_ALIAS)
+ALL_ASSEMBLERS.extend(LOCASOPT_ALIAS)
+ALL_ASSEMBLERS.extend(LOCAS_ALIAS)
+ALL_ASSEMBLERS.extend(SOAPDENOVO_ALIAS)
+ALL_ASSEMBLERS.extend(IDBA_ALIAS)
+ALL_ASSEMBLERS.extend(NO_ASSEMBLER)
+
 def run_velvetOptimiser(fastq_file_name, low_k=19, high_k=99, outputdir='velvetopt', **kwarg):
     command='rm -rf %s'%outputdir
     if os.path.exists(outputdir):
@@ -514,7 +528,7 @@ def _prepare_optparser():
     optparser.add_option("-d","--fastq_dir",dest="fastq_dir",type="string",
                          help="Path to a directory containing fastq file (only extension .fastq will be processed). Default: %default")
     optparser.add_option("-a","--assembler_name",dest="assembler_name",type="string",default=None,
-                         help="The name of the assembler that will be used on the fastq files. Default: %default")
+                         help="The name of the assembler that will be used on the fastq files. Accepted keywords are: " + ", ".join(ALL_ASSEMBLERS) + ". Default: %default")
     optparser.add_option("-s","--estimated_size",dest="estimated_size",type="string",default="600",
                          help="The estimated size of the contig to assemble. It is used by velvetk to estimate the best kmer. Default: %default")
     optparser.add_option("--force_merge",dest="force_merge",action='store_true',default=False,
