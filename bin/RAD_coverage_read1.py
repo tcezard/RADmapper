@@ -157,6 +157,12 @@ def process_single_samtools_run_with_read_group(bam_file,all_contigs_info,samtoo
                 if sam_record.is_duplicate_read():
                     all_sample_duplicate[read_groups.get(rg_id)]+=1
                 all_sample_coverage[read_groups.get(rg_id)]+=1
+        if current_contig != None:
+            for sample in read_groups.values():
+                all_contigs_info.add_values(current_contig, all_sample_coverage.get(sample),
+                                            all_sample_duplicate.get(sample), sample = sample)
+                all_sample_coverage[sample]=0
+                all_sample_duplicate[sample]=0
     finally:
         open_stream.close()
 
@@ -215,6 +221,7 @@ def RAD_median_coverage(bam_files,output_file, with_rg=False):
             out.append("%s\t%s"%(coverage,coverage_mrk_dup))
             
         open_output.write("%s\n"%('\t'.join(out)))
+    return all_contigs_info
         
     
 def main():
