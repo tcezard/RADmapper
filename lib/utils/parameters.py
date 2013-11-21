@@ -66,8 +66,8 @@ class Pipeline_param(Pipeline_config):
     def get_gatk_dir(self):
         return self._get_file_location('gatk', 'gatk_dir')
     
-    def get_fastqx_dir(self):
-        return self._get_file_location('fastx', 'fastqx_dir')
+    def get_fastx_dir(self):
+        return self._get_file_location('fastx', 'fastx_dir')
     
     def get_solexaqa_dir(self):
         return self._get_file_location('qc_tools', 'solexaqa_dir')

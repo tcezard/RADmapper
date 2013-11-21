@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 '''
 Created on Mar 9, 2011
 
@@ -175,7 +176,7 @@ def sex_specific_markers_female(vcf_file, mother, father, offsprings_file):
             if nb_male_offspring < len(sex_to_sample.get('M'))-4:
                 valid=False
             if valid :
-                print vcf_record.get_reference(), vcf_record.get_position(), "%s:%s"%(gt_father,sp_father), '  '.join(sample_male), "\t\t", "%s:%s"%(gt_mother,sp_mother), '  '.j$
+                print vcf_record.get_reference(), vcf_record.get_position(), "%s:%s"%(gt_father,sp_father), '  '.join(sample_male), "\t\t", "%s:%s"%(gt_mother,sp_mother), '  '.j
 
 
 

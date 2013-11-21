@@ -165,7 +165,7 @@ def get_sam_stream(bam_file, samtools_bin=None, options='', chomosome_and_positi
     
     command='%s view %s %s %s'%(samtools_bin, options, bam_file, chomosome_and_position)
     stdout, process = utils_commands.get_output_stream_from_command(command)
-    return stdout
+    return stdout, process
 
 
 def get_pileup_from_bam(bam_file, genome_file=None, samtools_bin=None, options=''):
@@ -614,6 +614,45 @@ def longest_common_substr_from_start(s1,s2):
     return s1[:pos] 
 
    
+   
+_code2atgc={'A':['A'],'a':['A'],'T':['T'],'t':['T'],'G':['G'],'g':['G'],'C':['C'],'c':['C'],
+           'R':['A','G'],'r':['A','G'],'Y':['C','T'],'y':['C','T'],'M':['C','A'],'m':['C','A'],
+           'K':['T','G'],'k':['T','G'],'W':['T','A'],'w':['T','A'],'S':['C','G'],'s':['C','G'],
+           'B':['C','T','G'],'b':['C','T','G'],'D':['A','T','G'],'d':['A','T','G'],'H':['A','T','C'],
+           'h':['A','T','C'],'V':['A','C','G'],'v':['A','C','G'],'N':['A','C','T','G'],'n':['A','C','T','G']}
+
+
+_atgc2iupac={'A':'A','T':'T','G':'G','C':'C','AG':'R','CT':'Y','AC':'M',
+           'GT':'K','AT':'W','CG':'S','CGT':'B','AGT':'D','ACT':'H',
+           'ACG':'V','ACGT':'N','R':'R','Y':'Y','M':'M','K':'K','W':'W',
+           'S':'S','B':'B','D':'D','H':'H','V':'V','N':'N' }
+
+def get_iupac_alphabet():
+    return ''.join(_code2atgc.keys())
+
+def get_nt_array_from_IUPAC(IUPAC_code):
+    array=_code2atgc.get(IUPAC_code)
+    return copy.copy(array)
+
+def is_IUPAC_code(IUPAC_code):
+    return _code2atgc.has_key(IUPAC_code)
+
+def atgc2iupac(array_of_code):
+    array_of_code.sort()
+    s=''.join(array_of_code).upper()
+    return _atgc2iupac.get(s)
+
+def cplx_atgc2iupac(array_of_code):
+    atgc={}
+    for code in array_of_code:
+        array=_code2atgc.get(code)
+        for c in array: atgc[c]=1
+    array=atgc.keys()
+    array.sort()
+    s=''.join(array).upper()
+    return _atgc2iupac.get(s)
+
+
 if __name__=="1__main__":
     maqDir='/home/pubseq/BioSw/Maq/'
     mapFile='/archive/solexa1_4/analysis/HS0615/30CG4AAXX_4/maq/30CG4AAXX_4.map'

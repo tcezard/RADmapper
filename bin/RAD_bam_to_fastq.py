@@ -1,9 +1,10 @@
+#!/usr/bin/env python
 import sys
 import utils
 from IO_interface import samIterator
 from utils.GenomeLoader import GenomeLoader
 from utils import DNA_tools, utils_logging
-import os
+import os, pysam
 import logging, threading
 from optparse import OptionParser
 from overlap import merge_ranges
@@ -12,6 +13,17 @@ from collections import OrderedDict
 import command_runner
 from utils.utils_commands import get_output_stream_from_command
 from multiprocessing import Pool, Value, Lock, Manager
+import time
+import RAD_assemble_read2, RAD_merge_results, RAD_smalt_align_reads_back_to_consensus
+
+def read_white_list(white_list_file):
+    all_consensus=[]
+    with open(white_list_file) as open_file:
+        for line in open_file:
+            sp_line = line.strip().split()
+            if sp_line and len(sp_line)>0:
+                all_consensus.append(sp_line[0])
+    return all_consensus
 
 class FuncThread(threading.Thread):
     def __init__(self, target, *args):
@@ -25,39 +37,85 @@ class FuncThread(threading.Thread):
         
     def get_returned_value(self):
         return self.returned_value
- 
+
+_all_open_bam={}
+
+def _get_open_bam_file(bam_file):
+    if _all_open_bam.has_key(bam_file):
+        return _all_open_bam.get(bam_file)
+    
+    logging.info('open %s'%bam_file)
+    open_bam = pysam.Samfile( bam_file, "rb" )
+    _all_open_bam[bam_file]=open_bam
+    return open_bam
         
+
+def get_pysam_iterator(bam_file, options, consensus):
+    sam_file = _get_open_bam_file(bam_file)
+    return sam_file.fetch(consensus)
+
+
+def get_read_group_from_bam_files(bam_files):
+    all_read_groups=[]
+    for bam_file in bam_files:
+        open_bam_file = _get_open_bam_file(bam_file)
+        read_groups = open_bam_file.header.get('RG')
+        out = ['@RG']
+        for read_group in read_groups:
+            out.append('ID:%s'%read_group.pop('ID'))
+            for key in read_group.keys():
+                out.append('%s:%s'%(key,read_group.get(key)))
+        all_read_groups.append('\t'.join(out))
+    return all_read_groups
+
+
 def load_from_sites_generator(bam_file, options='', consensus=''):
     """This function return a generator that iterates over read pair where both pairs are mapping.
     @return a tuple containing read1 read2 and the restriction site position."""
-    stream = utils.get_sam_stream(bam_file, options=options, chomosome_and_position=consensus)
+    stream, process = utils.get_sam_stream(bam_file, options=options, chomosome_and_position=consensus)
     all_unmatched_read1={}
     all_unmatched_read2={}
     count_line=0
     for line in stream:
         count_line+=1
-        #if count_line%10000==0:
-        #    print count_line, len(all_unmatched_read1), len(all_unmatched_read2)
         sam_record = samIterator.Sam_record(line)
         if sam_record.is_first_read():
             sam_record_r2 = all_unmatched_read2.pop(sam_record.get_query_name(),None)
-            info=None
-            if not sam_record.is_unmapped():
-                info = get_RAD_site_from_sam_record(sam_record)
             if sam_record_r2:
-                if info:
-                    yield((sam_record,sam_record_r2, info))
+                yield((sam_record,sam_record_r2))
             else:
                 all_unmatched_read1[sam_record.get_query_name()]=sam_record
         else:
             sam_record_r1 = all_unmatched_read1.pop(sam_record.get_query_name(),None)
             if sam_record_r1:
-                info = get_RAD_site_from_sam_record(sam_record_r1)
-                if info:
-                    yield((sam_record_r1, sam_record, info))
+                yield((sam_record_r1, sam_record))
             else:
                 all_unmatched_read2[sam_record.get_query_name()]=sam_record
+    #return_code = process.wait()
 
+
+def load_from_sites_generator2(bam_file, options='', consensus=''):
+    """This function return a generator that iterates over read pair where both pairs are mapping.
+    @return a tuple containing read1 read2 and the restriction site position."""
+    iter_sam = get_pysam_iterator(bam_file, options=options, consensus=consensus)
+    all_unmatched_read1={}
+    all_unmatched_read2={}
+    count_line=0
+    for align_read in iter_sam:
+        count_line+=1
+        if align_read.is_read1:
+            align_read_r2 = all_unmatched_read2.pop(align_read.qname,None)
+            if align_read_r2:
+                yield((align_read, align_read_r2))
+            else:
+                all_unmatched_read1[align_read.qname] = align_read
+        else:
+            sam_record_r1 = all_unmatched_read1.pop(align_read.qname,None)
+            if sam_record_r1:
+                yield((sam_record_r1, align_read))
+            else:
+                all_unmatched_read2[align_read.qname]=align_read
+    
 
 class File_factory():
     def __init__(self, max_nb_file=50):
@@ -89,10 +147,10 @@ class File_factory():
         self.close()
 
 
-def get_dir_name_from_site(reference, in_dir_counter, dir_counter, lock):
+def get_dir_name_from_site(reference, in_dir_counter, dir_counter, lock, nb_consensus_per_dir=50):
     lock.acquire()
     in_dir_counter.value+=1
-    if in_dir_counter.value>50 or dir_counter.value==0:
+    if in_dir_counter.value>nb_consensus_per_dir or dir_counter.value==0:
         in_dir_counter.value=1
         dir_counter.value+=1
         if not os.path.exists('%s_dir'%dir_counter.value):
@@ -104,21 +162,19 @@ def get_dir_name_from_site(reference, in_dir_counter, dir_counter, lock):
 
 
 def process_one_bam_file_one_consensus(bam_file, consensus_name):
-    sam_pair_generator = load_from_sites_generator(bam_file, consensus=consensus_name)
+    sam_pair_generator = load_from_sites_generator2(bam_file, consensus=consensus_name)
     all_first_reads_for_consensus=[]
     all_second_reads_for_consensus=[]
-    for sam_record_r1,sam_record_r2, site_info in sam_pair_generator:
-        rgid=sam_record_r1.get_tag('RG')
-        all_first_reads_for_consensus.append(sam_record_to_fastq(sam_record_r1,rgid=rgid))
-        all_second_reads_for_consensus.append(sam_record_to_fastq(sam_record_r2,rgid=rgid))
-        
+    for aligned_read_r1,aligned_read_r2, in sam_pair_generator:
+        rgid=aligned_read_r1.opt('RG')
+        all_first_reads_for_consensus.append(aligned_read_to_fastq(aligned_read_r1,rgid=rgid))
+        all_second_reads_for_consensus.append(aligned_read_to_fastq(aligned_read_r2,rgid=rgid))
+        aligned_read_r1=None
+        aligned_read_r2=None
     return all_first_reads_for_consensus, all_second_reads_for_consensus
 
 
-
-def process_one_chomosome(in_dir_counter, dir_counter, lock,
-                          bam_files, consensus_name, consensus_sequence, min_nb_read=20):
-    print "process %s "%consensus_name
+def extract_reads_from_one_consensus(bam_files, output_dir, consensus_name, consensus_sequence):
     all_read1_for_that_consensus=[]
     all_read2_for_that_consensus=[]
     for bam_file in bam_files:
@@ -126,8 +182,40 @@ def process_one_chomosome(in_dir_counter, dir_counter, lock,
         all_read1_for_that_consensus.extend(all_first_reads_for_consensus)
         all_read2_for_that_consensus.extend(all_second_reads_for_consensus)
     
+    consensus_directory = os.path.join(output_dir, consensus_name+'_dir')
+    if not os.path.exists(consensus_directory):
+        os.mkdir(consensus_directory)
+    read1_file=os.path.join(consensus_directory,consensus_name+"_1.fastq")
+    read2_file=os.path.join(consensus_directory,consensus_name+"_2.fastq")
+    read1_consensus=os.path.join(consensus_directory,consensus_name+"_1.fa")
+    open_file = open(read1_consensus,'w')
+    open_file.write('>%s\n%s\n'%(consensus_name,consensus_sequence))
+    open_file.close()
+    
+    open_file = open(read1_file,'w')
+    open_file.write('\n'.join(all_read1_for_that_consensus))
+    open_file.close()
+    
+    open_file = open(read2_file,'w')
+    open_file.write('\n'.join(all_read2_for_that_consensus))
+    open_file.close()
+    
+    return read1_consensus, read1_file, read2_file
+
+def process_one_chomosome(in_dir_counter, dir_counter, lock,
+                          bam_files, consensus_name, consensus_sequence, min_nb_read=20, 
+                          nb_consensus_per_dir=50):
+    print "process %s "%consensus_name
+    all_read1_for_that_consensus=[]
+    all_read2_for_that_consensus=[]
+    for bam_file in bam_files:
+        all_first_reads_for_consensus, all_second_reads_for_consensus = process_one_bam_file_one_consensus(bam_file, consensus_name)
+        print "process %s --> %s reads from %s"%(consensus_name, len(all_first_reads_for_consensus), bam_file)
+        all_read1_for_that_consensus.extend(all_first_reads_for_consensus)
+        all_read2_for_that_consensus.extend(all_second_reads_for_consensus)
+    
     if len(all_read1_for_that_consensus) > min_nb_read:
-        output_directory = get_dir_name_from_site(consensus_name, in_dir_counter, dir_counter, lock)
+        output_directory = get_dir_name_from_site(consensus_name, in_dir_counter, dir_counter, lock, nb_consensus_per_dir)
         if not os.path.exists(output_directory):
             os.mkdir(output_directory)
         read1_file=os.path.join(output_directory,consensus_name+"_1.fastq")
@@ -163,9 +251,9 @@ def get_all_consensus_names(bam_file):
 
 
 
-def process_all_bam_files_with_pool(bam_files, all_read1_consensus_file, min_nb_read):
+def process_all_bam_files_with_pool(bam_files, all_read1_consensus_file, min_nb_read, nb_consensus_per_dir=50, number_of_process=10):
     genome_loader = GenomeLoader(all_read1_consensus_file)
-    pool = Pool(processes=10)
+    pool = Pool(processes=number_of_process)
     manager = Manager()
     lock = manager.Lock()
     in_dir_counter = manager.Value('i', 0)
@@ -173,18 +261,79 @@ def process_all_bam_files_with_pool(bam_files, all_read1_consensus_file, min_nb_
     #consensus_name, consensus_sequence = genome_loader.next()
     #pool.apply(process_one_chomosome, args=[in_dir_counter, dir_counter, lock, bam_files, consensus_name, consensus_sequence, min_nb_read])
     for consensus_name, consensus_sequence in genome_loader:
-        pool.apply_async(process_one_chomosome, args=[in_dir_counter, dir_counter, lock, bam_files, consensus_name, consensus_sequence, min_nb_read])
+        pool.apply_async(process_one_chomosome, args=[in_dir_counter, dir_counter, lock, bam_files, consensus_name, consensus_sequence, min_nb_read, nb_consensus_per_dir])
     pool.close()
     pool.join() 
 
+def extract_reads_from_all_bam_files_all_consensus(bam_files, all_read1_consensus_file, white_list_file,
+                                                   nb_consensus_per_dir=50, number_of_process=10):
+    list_consensus = read_white_list(white_list_file)
+    list_of_list_consensus=[]
+    temp_list = [] 
+    i=0
+    for consensus in list_consensus:
+        i+=1
+        temp_list.append(consensus)
+        if i%nb_consensus_per_dir == 0:
+            list_of_list_consensus.append(temp_list)
+            temp_list = []
+    if len(temp_list)>0:
+        list_of_list_consensus.append(temp_list)
+    print "split into %s jobs of %s consensus"%(len(list_of_list_consensus),nb_consensus_per_dir)
+    
+    genome_loader = GenomeLoader(all_read1_consensus_file)
+    list_of_list_consensus=list_of_list_consensus[:10]
+    
+    #all_read_groups = get_read_group_from_bam_files(bam_files)
+    
+    #Generate the assembly function list from the assembler to try
+    #all_assembler_to_try=['velvet']
+    #assembly_function_list=[]
+    #for assembler_name in all_assembler_to_try:
+    #    assembly_function=RAD_assemble_read2.get_assembly_function(assembler_name)
+    #    assembly_function_list.append(assembly_function)
+    
+    
+    for i, list_consensus in enumerate(list_of_list_consensus):
+        output_dir = os.path.join(os.path.curdir, '%s_dir'%(i+1))
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+        extract_reads_from_all_bam_files_set_of_consensus(bam_files, genome_loader, list_consensus, output_dir)
+        
 
-def get_RAD_site_from_sam_record(sam_record):
-    if sam_record.is_first_read() and not sam_record.is_unmapped():
-        ref=sam_record.get_reference_name()
-        pos=int(sam_record.get_alignment_start())
-        return (ref, pos)
-    return None    
-            
+def split_whitelist(white_list_file,nb_consensus_per_dir):
+    list_consensus = read_white_list(white_list_file)
+    list_of_list_consensus=[]
+    temp_list = [] 
+    i=0
+    for consensus in list_consensus:
+        i+=1
+        temp_list.append(consensus)
+        if i%nb_consensus_per_dir == 0:
+            list_of_list_consensus.append(temp_list)
+            temp_list = []
+    if len(temp_list)>0:
+        list_of_list_consensus.append(temp_list)
+    #print "split into %s jobs of %s consensus"%(len(list_of_list_consensus),nb_consensus_per_dir)
+    for i, list_of_consensus in enumerate(list_of_list_consensus):
+        output_dir = os.path.join(os.path.curdir, '%s_dir'%(i+1))
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+        output_file=os.path.join(output_dir, 'whitelist.txt')
+        with open(output_file, 'w') as open_file:
+            open_file.write('\n'.join(list_of_consensus))
+        yield (output_dir, output_file)
+        
+
+
+def extract_reads_from_all_bam_files_set_of_consensus(bam_files, list_consensus, output_dir, genome_loader=None, all_read1_consensus_file=None):
+    if genome_loader is None:
+        genome_loader = GenomeLoader(all_read1_consensus_file)
+    for consensus_name in list_consensus:
+        logging.info("Extract reads from %s "%consensus_name)
+        consensus_name, consensus_sequence = genome_loader.get_chr(consensus_name)
+        extract_reads_from_one_consensus(bam_files, output_dir, consensus_name, consensus_sequence)
+    
 def sam_record_to_fastq(sam_record, rgid=None):
     out=[]
     if sam_record.is_first_read():
@@ -208,6 +357,29 @@ def sam_record_to_fastq(sam_record, rgid=None):
         out.append(sam_record.get_query_quality())
     return '\n'.join(out)
 
+def aligned_read_to_fastq(aligned_read, rgid=None):
+    out=[]
+    if aligned_read.is_read1:
+        suffix='/1'
+    elif aligned_read.is_read2:
+        suffix='/2'
+    else:
+        suffix=''
+    if rgid:
+        rgid_str='RGID:%s'%(rgid)
+    else:
+        rgid_str=''
+    out.append('@%s%s%s'%(aligned_read.qname, rgid_str, suffix))
+    if aligned_read.is_read2:
+        out.append(DNA_tools.rev_complements(aligned_read.seq))
+        out.append('+')
+        out.append(aligned_read.qual[::-1])
+    else:
+        out.append(aligned_read.seq)
+        out.append('+')
+        out.append(aligned_read.qual)
+    return '\n'.join(out)
+
 
 def main():
     #initialize the logging
@@ -221,16 +393,27 @@ def main():
         logging.warning(optparser.get_usage())
         logging.critical("Non valid arguments: exit")
         sys.exit(1)
+    if options.debug:
+        utils_logging.init_logging(logging.DEBUG)
     bam_files=[options.bam_file]
     if len(args)>0:
         bam_files.extend(args)
-    
-    #process_all_bam_files(bam_files=bam_files, 
-    #                      min_nb_read=options.min_coverage)
-    process_all_bam_files_with_pool(bam_files=bam_files,
-                                    all_read1_consensus_file=options.read1_consensus_file,
-                                    min_nb_read=options.min_coverage)
-    
+    command_runner.set_command_to_run_localy()
+    if options.output_dir:
+        list_consensus = read_white_list(options.white_list_file)
+        extract_reads_from_all_bam_files_set_of_consensus(bam_files, list_consensus, options.output_dir,
+                                                          genome_loader=None, all_read1_consensus_file=options.read1_consensus_file)
+    else:
+        iter_dir_and_file = split_whitelist(white_list_file=options.white_list_file, nb_consensus_per_dir=options.nb_consensus_per_dir)
+        for output_dir, sub_whitelist in iter_dir_and_file:
+            command = 'python %s -g %s -w %s -o %s -b %s'%(sys.argv[0], options.read1_consensus_file, sub_whitelist, output_dir, ' '.join(bam_files))
+            print command
+            
+
+        #extract_reads_from_all_bam_files_all_consensus(bam_files=bam_files, all_read1_consensus_file=options.read1_consensus_file,
+        #                                               white_list_file=options.white_list_file,
+        #                                               nb_consensus_per_dir=options.nb_consensus_per_dir, 
+        #                                               number_of_process=options.number_of_process)
     
 
 
@@ -246,9 +429,18 @@ def _prepare_optparser():
     optparser.add_option("-b","--bam_file",dest="bam_file",type="string",
                          help="The bam file from which the reads should be extracted.")
     optparser.add_option("-g","--read1_consensus_file",dest="read1_consensus_file",type="string",
-                         help="The fasta file contanins the read1 consensus file corresponding to the bam file.")
-    optparser.add_option("-c","--min_coverage",dest="min_coverage",type="int",default=20,
-                         help="The minimum coverage to take create a file with read2 reads.")
+                         help="The fasta file containing the read1 consensus file corresponding to the bam file.")
+    optparser.add_option("-w","--white_list_file",dest="white_list_file",type="string",
+                         help="The file containing the name of the consensus to assemble")
+    optparser.add_option("-o","--output_dir",dest="output_dir",type="string",
+                         help="This act as a flag to bypass the nb_consensus_per_dir. This means that all consensus in the whitelist will be extracted in the output_dir.")
+    optparser.add_option("-p","--number_of_process",dest="number_of_process",type="int",default=10,
+                         help="The number of process used to extract the information from the bam files.")
+    optparser.add_option("-n","--nb_consensus_per_dir",dest="nb_consensus_per_dir",type="int",default=50,
+                         help="The number of that should be held in each directory.")
+    optparser.add_option("--debug",dest="debug",action='store_true',default=False,
+                         help="Output debug statment. Default: %default")
+    
     return optparser
 
 
@@ -260,6 +452,18 @@ def _verifyOption(options):
     if not options.bam_file:
         logging.error("You must specify a bam file -b.")
         arg_pass=False
+    if not options.read1_consensus_file:
+        logging.error("You must specify a fasta file with the read1 consensus with -g.")
+        arg_pass=False
+    elif not os.path.exists(options.read1_consensus_file):
+        logging.error("You must specify a an existing fasta file with -g.")
+        arg_pass=False
+    if not options.white_list_file:
+        logging.error("You must specify a list of consensus to use with -w.")
+        arg_pass=False
+    elif not os.path.exists(options.white_list_file):
+        logging.error("You must specify a an existing list of consensus to use with -w.")
+        arg_pass=False
     return arg_pass
 
 
@@ -267,3 +471,9 @@ def _verifyOption(options):
 if __name__=="__main__":
     main()        
 
+
+if __name__=="1__main__":
+    bam_files=sys.argv[1:]
+    for bam_file in bam_files:
+        open_bam = _get_open_bam_file(bam_file)
+    

@@ -27,7 +27,7 @@ def load_new_fasta(fasta_file):
 
 def shift_reads(bam_file, fasta_file, output_sam_file):
     all_sequences=load_new_fasta(fasta_file)
-    stream = utils.get_sam_stream(bam_file, options='-h')
+    stream, process = utils.get_sam_stream(bam_file, options='-h')
     open_output= utils_logging.open_output_file(output_sam_file, pipe=True)
     open_output.write("@HD\tVN:1.0\tSO:unsorted\n")
     all_values = all_sequences.values()

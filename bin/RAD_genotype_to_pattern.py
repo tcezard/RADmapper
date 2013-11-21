@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 '''
 Created on Mar 9, 2011
 
@@ -17,8 +18,112 @@ from collections import Counter, defaultdict
 OUTPUT_TYPE_JOINMAP="joinmap"
 OUTPUT_TYPE_CARTHAGENE="carthagene"
 OUTPUT_TYPE_ONEMAP="onemap"
-
+mendelian_error=50
 OUTPUT_TYPE=[OUTPUT_TYPE_JOINMAP,OUTPUT_TYPE_CARTHAGENE,OUTPUT_TYPE_ONEMAP]
+
+
+
+all_possible_patterns={"0/0 0/0" : {"./0":0, "0/0":0, "./.":0},
+"0/0 0/1" : {"./0":0, "0/1":0, "0/0":0, "./.":0, "./1":0},
+"0/0 0/2" : {"0/2":0, "./0":0, "0/0":0, "./2":0, "./.":0},
+"0/0 0/3" : {"./0":0, "./3":0, "0/0":0, "./.":0, "0/3":0},
+"0/0 1/1" : {"./0":0, "0/1":0, "./.":0, "./1":0},
+"0/0 1/2" : {"./0":0, "./.":0, "0/2":0, "./1":0, "0/1":0, "./2":0},
+"0/0 1/3" : {"0/3":0, "./.":0, "./0":0, "./1":0, "0/1":0, "./3":0},
+"0/0 2/2" : {"0/2":0, "./0":0, "./2":0, "./.":0},
+"0/0 2/3" : {"./0":0, "./.":0, "0/2":0, "0/3":0, "./3":0, "./2":0},
+"0/0 3/3" : {"./0":0, "./3":0, "./.":0, "0/3":0},
+"0/1 0/0" : {"./0":0, "0/1":0, "0/0":0, "./.":0, "./1":0},
+"0/1 0/1" : {"./.":0, "./0":0, "1/1":0, "./1":0, "0/1":0, "0/0":0},
+"0/1 0/2" : {"./0":0, "./.":0, "1/2":0, "0/2":0, "./1":0, "0/1":0, "0/0":0, "./2":0},
+"0/1 0/3" : {"1/3":0, "./1":0, "./.":0, "./0":0, "0/3":0, "0/1":0, "0/0":0, "./3":0},
+"0/1 1/1" : {"./0":0, "0/1":0, "1/1":0, "./.":0, "./1":0},
+"0/1 1/2" : {"./0":0, "./.":0, "1/2":0, "0/2":0, "1/1":0, "./1":0, "0/1":0, "./2":0},
+"0/1 1/3" : {"1/3":0, "./1":0, "./.":0, "./0":0, "1/1":0, "0/3":0, "0/1":0, "./3":0},
+"0/1 2/2" : {"./0":0, "./.":0, "1/2":0, "0/2":0, "./1":0, "./2":0},
+"0/1 2/3" : {"./0":0, "1/3":0, "./1":0, "./.":0, "1/2":0, "0/2":0, "0/3":0, "./3":0, "./2":0},
+"0/1 3/3" : {"1/3":0, "./1":0, "./.":0, "./0":0, "0/3":0, "./3":0},
+"0/2 0/0" : {"./0":0, "0/2":0, "0/0":0, "./2":0, "./.":0},
+"0/2 0/1" : {"0/2":0, "./.":0, "1/2":0, "./0":0, "./1":0, "0/1":0, "0/0":0, "./2":0},
+"0/2 0/2" : {"./0":0, "2/2":0, "0/2":0, "./.":0, "0/0":0, "./2":0},
+"0/2 0/3" : {"0/2":0, "./.":0, "2/3":0, "./0":0, "0/3":0, "./3":0, "0/0":0, "./2":0},
+"0/2 1/1" : {"./.":0, "1/2":0, "./0":0, "./1":0, "0/1":0, "./2":0},
+"0/2 1/2" : {"./0":0, "2/2":0, "1/2":0, "0/2":0, "./.":0, "./1":0, "0/1":0, "./2":0},
+"0/2 1/3" : {"./1":0, "./.":0, "1/2":0, "./0":0, "0/3":0, "0/1":0, "./2":0, "2/3":0, "./3":0},
+"0/2 2/2" : {"0/2":0, "./0":0, "./2":0, "./.":0, "2/2":0},
+"0/2 2/3" : {"./0":0, "2/2":0, "0/2":0, "./.":0, "0/3":0, "./3":0, "./2":0, "2/3":0},
+"0/2 3/3" : {"./.":0, "./0":0, "0/3":0, "./3":0, "./2":0, "2/3":0},
+"0/3 0/0" : {"./0":0, "./3":0, "0/0":0, "./.":0, "0/3":0},
+"0/3 0/1" : {"1/3":0, "0/3":0, "./1":0, "./.":0, "./0":0, "./3":0, "0/1":0, "0/0":0},
+"0/3 0/2" : {"./2":0, "./0":0, "./.":0, "0/2":0, "0/3":0, "./3":0, "0/0":0, "2/3":0},
+"0/3 0/3" : {"3/3":0, "./.":0, "./0":0, "0/3":0, "./3":0, "0/0":0},
+"0/3 1/1" : {"1/3":0, "./.":0, "./0":0, "./1":0, "0/1":0, "./3":0},
+"0/3 1/2" : {"./0":0, "1/3":0, "./1":0, "./.":0, "0/2":0, "./3":0, "0/1":0, "./2":0, "2/3":0},
+"0/3 1/3" : {"3/3":0, "1/3":0, "0/3":0, "./1":0, "./.":0, "./0":0, "./3":0, "0/1":0},
+"0/3 2/2" : {"./0":0, "./.":0, "0/2":0, "./3":0, "./2":0, "2/3":0},
+"0/3 2/3" : {"./0":0, "3/3":0, "./.":0, "0/2":0, "0/3":0, "./3":0, "./2":0, "2/3":0},
+"0/3 3/3" : {"./0":0, "./3":0, "./.":0, "3/3":0, "0/3":0},
+"1/1 0/0" : {"./0":0, "0/1":0, "./.":0, "./1":0},
+"1/1 0/1" : {"./0":0, "0/1":0, "1/1":0, "./.":0, "./1":0},
+"1/1 0/2" : {"./.":0, "1/2":0, "./0":0, "./1":0, "0/1":0, "./2":0},
+"1/1 0/3" : {"1/3":0, "./1":0, "./.":0, "./0":0, "./3":0, "0/1":0},
+"1/1 1/1" : {"1/1":0, "./.":0, "./1":0},
+"1/1 1/2" : {"1/1":0, "./1":0, "./2":0, "./.":0, "1/2":0},
+"1/1 1/3" : {"1/3":0, "./3":0, "1/1":0, "./.":0, "./1":0},
+"1/1 2/2" : {"./2":0, "./1":0, "./.":0, "1/2":0},
+"1/1 2/3" : {"1/3":0, "./.":0, "1/2":0, "./1":0, "./3":0, "./2":0},
+"1/1 3/3" : {"1/3":0, "./3":0, "./.":0, "./1":0},
+"1/2 0/0" : {"./0":0, "./.":0, "0/2":0, "./1":0, "0/1":0, "./2":0},
+"1/2 0/1" : {"./0":0, "./.":0, "1/2":0, "0/2":0, "1/1":0, "./1":0, "0/1":0, "./2":0},
+"1/2 0/2" : {"./0":0, "2/2":0, "1/2":0, "0/2":0, "./.":0, "./1":0, "0/1":0, "./2":0},
+"1/2 0/3" : {"./0":0, "1/3":0, "./.":0, "0/2":0, "./1":0, "0/1":0, "./2":0, "2/3":0, "./3":0},
+"1/2 1/1" : {"1/1":0, "1/2":0, "./2":0, "./.":0, "./1":0},
+"1/2 1/2" : {"./.":0, "1/2":0, "1/1":0, "2/2":0, "./1":0, "./2":0},
+"1/2 1/3" : {"1/3":0, "./.":0, "1/2":0, "1/1":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"1/2 2/2" : {"./2":0, "./1":0, "./.":0, "2/2":0, "1/2":0},
+"1/2 2/3" : {"1/3":0, "2/2":0, "1/2":0, "./.":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"1/2 3/3" : {"1/3":0, "./.":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"1/3 0/0" : {"./1":0, "./.":0, "./0":0, "0/3":0, "0/1":0, "./3":0},
+"1/3 0/1" : {"1/3":0, "./1":0, "./.":0, "./0":0, "1/1":0, "0/3":0, "0/1":0, "./3":0},
+"1/3 0/2" : {"./1":0, "./.":0, "1/2":0, "./0":0, "0/3":0, "0/1":0, "./2":0, "2/3":0, "./3":0},
+"1/3 0/3" : {"3/3":0, "1/3":0, "./1":0, "./.":0, "./0":0, "0/3":0, "0/1":0, "./3":0},
+"1/3 1/1" : {"1/3":0, "./3":0, "1/1":0, "./.":0, "./1":0},
+"1/3 1/2" : {"1/3":0, "./.":0, "1/2":0, "1/1":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"1/3 1/3" : {"3/3":0, "1/3":0, "./.":0, "1/1":0, "./1":0, "./3":0},
+"1/3 2/2" : {"./.":0, "1/2":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"1/3 2/3" : {"3/3":0, "1/3":0, "./.":0, "1/2":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"1/3 3/3" : {"1/3":0, "./3":0, "./.":0, "3/3":0, "./1":0},
+"2/2 0/0" : {"0/2":0, "./0":0, "./2":0, "./.":0},
+"2/2 0/1" : {"./0":0, "./.":0, "1/2":0, "0/2":0, "./1":0, "./2":0},
+"2/2 0/2" : {"0/2":0, "./0":0, "./2":0, "./.":0, "2/2":0},
+"2/2 0/3" : {"./0":0, "./.":0, "0/2":0, "./3":0, "./2":0, "2/3":0},
+"2/2 1/1" : {"./2":0, "./1":0, "./.":0, "1/2":0},
+"2/2 1/2" : {"./2":0, "./1":0, "./.":0, "2/2":0, "1/2":0},
+"2/2 1/3" : {"./.":0, "1/2":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"2/2 2/2" : {"./2":0, "./.":0, "2/2":0},
+"2/2 2/3" : {"./.":0, "./3":0, "./2":0, "2/3":0, "2/2":0},
+"2/2 3/3" : {"./3":0, "./2":0, "2/3":0, "./.":0},
+"2/3 0/0" : {"./0":0, "./.":0, "0/2":0, "0/3":0, "./3":0, "./2":0},
+"2/3 0/1" : {"./0":0, "1/3":0, "./1":0, "./.":0, "1/2":0, "0/2":0, "0/3":0, "./3":0, "./2":0},
+"2/3 0/2" : {"./0":0, "2/2":0, "0/2":0, "./.":0, "0/3":0, "./3":0, "./2":0, "2/3":0},
+"2/3 0/3" : {"./0":0, "3/3":0, "./.":0, "0/2":0, "0/3":0, "./3":0, "./2":0, "2/3":0},
+"2/3 1/1" : {"1/3":0, "./.":0, "1/2":0, "./1":0, "./3":0, "./2":0},
+"2/3 1/2" : {"1/3":0, "2/2":0, "1/2":0, "./.":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"2/3 1/3" : {"3/3":0, "1/3":0, "./.":0, "1/2":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"2/3 2/2" : {"./.":0, "./3":0, "./2":0, "2/3":0, "2/2":0},
+"2/3 2/3" : {"3/3":0, "2/2":0, "./.":0, "./3":0, "./2":0, "2/3":0},
+"2/3 3/3" : {"./.":0, "./3":0, "./2":0, "2/3":0, "3/3":0},
+"3/3 0/0" : {"./0":0, "./3":0, "./.":0, "0/3":0},
+"3/3 0/1" : {"1/3":0, "0/3":0, "./.":0, "./0":0, "./1":0, "./3":0},
+"3/3 0/2" : {"./.":0, "./0":0, "0/3":0, "./3":0, "./2":0, "2/3":0},
+"3/3 0/3" : {"./0":0, "./3":0, "./.":0, "3/3":0, "0/3":0},
+"3/3 1/1" : {"1/3":0, "./3":0, "./.":0, "./1":0},
+"3/3 1/2" : {"1/3":0, "./.":0, "./1":0, "./3":0, "./2":0, "2/3":0},
+"3/3 1/3" : {"1/3":0, "./3":0, "./.":0, "3/3":0, "./1":0},
+"3/3 2/2" : {"./3":0, "./2":0, "2/3":0, "./.":0},
+"3/3 2/3" : {"./.":0, "./3":0, "./2":0, "2/3":0, "3/3":0},
+"3/3 3/3" : {"./3":0, "./.":0, "3/3":0}}
+
 def generate_empty_hash_with_sample(all_samples):
     hash={}
     for sample in all_samples:
@@ -80,9 +185,6 @@ def get_offsprings_possible_genotypes_om():
                         "2/3 0/1":{"type":"A.1", "0/2":"ac", "1/2":"ad", "0/3":"bc", "1/3":"bd"},
                         "0/0 1/2":{"type":"D2.14", "0/1":"ac", "0/2":"bc"},
                         "1/2 0/0":{"type":"D2.14", "0/1":"ac", "0/2":"bc"}
-#"1/1 0/0":{},
-#
-#"0/0 1/1":{},
                         }
     
     
@@ -314,7 +416,7 @@ class Phased_vcf_reader():
     def get_nb_snps(self):
         return self.nb_snps
 
-def phased_snps_to_markers(vcf_file, ordered_sample, mother, father, geno_qual_threshold, max_missing_offspring):
+def phased_snps_to_markers(vcf_file, ordered_sample, mother, father, geno_qual_threshold, max_missing_offspring, nb_ME_error=1):
     phased_reader = Phased_vcf_reader(vcf_file, mother, father, geno_qual_threshold)
     #non_supported_genotypes=Counter()
     #non_supported_markers=0
@@ -322,15 +424,27 @@ def phased_snps_to_markers(vcf_file, ordered_sample, mother, father, geno_qual_t
     broken_down_SNPs=0
     rescued_markers=0
     rescued_SNPs=0
+    created_markers=0
     droped_markers=0
     droped_SNPs=0
+    mendelian_error_count=0
+    mendelian_error_offsprings_count=Counter()
     for phased_genotype_mother, phased_genotype_father, phased_vcf_record in phased_reader.read():
-        
-        geno_parents, all_offsprings_genotypes = process_genotypes_of_a_locus(phased_genotype_mother,
+        if len(phased_vcf_record)==1:
+            #If it is not a multi loci allele can allow mendelian error to go through
+            #They'll be caught at the genotype matching stage
+            allow_mendelian_error=True
+        else:
+            allow_mendelian_error=False
+        geno_parents, all_offsprings_genotypes = compare_offspring_haplotype_to_parents(phased_genotype_mother,
                                                                               phased_genotype_father,
                                                                               phased_vcf_record,ordered_sample,
-                                                                              max_missing_offspring=max_missing_offspring)
-        if all_offsprings_genotypes is None:
+                                                                              max_missing_offspring=max_missing_offspring,
+                                                                              allow_mendelian_error=allow_mendelian_error)
+        mendelian_error_offsprings=[]
+        if all_offsprings_genotypes: 
+            mendelian_error_offsprings = test_mendelian_error(geno_parents, all_offsprings_genotypes,ordered_sample)
+        if all_offsprings_genotypes is None or len(mendelian_error_offsprings)> nb_ME_error:
             if len(phased_vcf_record)>1:
                 #Trying again without the phasing information
                 logging.debug("breaking down marker into %s pieces"%(len(phased_vcf_record)))
@@ -339,14 +453,22 @@ def phased_snps_to_markers(vcf_file, ordered_sample, mother, father, geno_qual_t
                 marker_rescued=False
                 for i in range(len(phased_vcf_record)):
                     logging.debug("marker: %s"%(get_list_of_SNPs_name([phased_vcf_record[i]])))
-                    geno_parents, all_offsprings_genotypes=process_genotypes_of_a_locus([phased_genotype_mother[i]],
+                    geno_parents, all_offsprings_genotypes=compare_offspring_haplotype_to_parents([phased_genotype_mother[i]],
                                                                           [phased_genotype_father[i]],
                                                                           [phased_vcf_record[i]],ordered_sample,
-                                                                          max_missing_offspring=max_missing_offspring)
+                                                                          max_missing_offspring=max_missing_offspring,
+                                                                          allow_mendelian_error=True)
                     if all_offsprings_genotypes is not None:
                         rescued_SNPs+=1
                         marker_rescued=True
-                        yield geno_parents, all_offsprings_genotypes, [phased_vcf_record[i]]
+                        mendelian_error_offsprings = test_mendelian_error(geno_parents, all_offsprings_genotypes,ordered_sample)
+                        if len(mendelian_error_offsprings)<= nb_ME_error:
+                            created_markers+=1
+                            yield geno_parents, all_offsprings_genotypes, [phased_vcf_record[i]]
+                        else:
+                            mendelian_error_count+=1
+                            for offspring_error in mendelian_error_offsprings:
+                                mendelian_error_offsprings_count[offspring_error]+=1
                     else:
                         droped_SNPs+=1
                     
@@ -354,17 +476,40 @@ def phased_snps_to_markers(vcf_file, ordered_sample, mother, father, geno_qual_t
                     rescued_markers+=1
                 else:
                     droped_markers+=1
-                        
+            else:
+                droped_markers+=1
         else:
-            yield geno_parents, all_offsprings_genotypes, phased_vcf_record
-    
+            if len(mendelian_error_offsprings)<= nb_ME_error:
+                created_markers+=1
+                yield geno_parents, all_offsprings_genotypes, phased_vcf_record
+            else:
+                mendelian_error_count+=1
+                for offspring_error in mendelian_error_offsprings:
+                    mendelian_error_offsprings_count[offspring_error]+=1
     logging.info( "%s SNPs discarded because of quality issue in parents"%phased_reader.get_discard_quality_parent())
     logging.info( '%s marker created by phasing %s SNPs'%(phased_reader.get_nb_marker_created(), phased_reader.get_nb_snps()) )
-    logging.info( '%s marker broken down in %s SNPs because too many missing genotype'%(broken_down_markers, broken_down_SNPs))
-    logging.info( '%s SNPs, %s markers rescued'%(rescued_SNPs,rescued_markers))
-    logging.info( '%s SNPs, %s markers droped'%(droped_SNPs,droped_markers))
-        
+    if broken_down_markers>0:
+        logging.info( '%s marker broken down in %s SNPs because too many missing genotype'%(broken_down_markers, broken_down_SNPs))
+        logging.info( '%s SNPs, %s markers rescued'%(rescued_SNPs,rescued_markers))
+        logging.info( '%s SNPs, %s markers more than %s missing offspring '%(droped_SNPs,droped_markers, max_missing_offspring))
+        logging.info( '%s SNPs show more than %s mendelian errors'%(mendelian_error_count, nb_ME_error))
+    else:
+        logging.info( '%s markers more than %s missing offspring '%(droped_markers, max_missing_offspring))
+        logging.info( '%s markers show more than %s mendelian errors'%(mendelian_error_count, nb_ME_error))
+    logging.info('Sample with mendelian error:\n%s'%('\n'.join(['%s : %s'%(key,mendelian_error_offsprings_count.get(key)) for key in mendelian_error_offsprings_count.keys()])))
+    logging.info( '%s marker pased on after filtering'%(created_markers) )
+    
      
+def test_mendelian_error(geno_parents, all_offsprings_genotypes, ordered_sample):
+    possible_geno_offsprings = all_possible_patterns.get(geno_parents)
+    samples_with_mendelian_error=[]
+    for i in range(len(all_offsprings_genotypes)):
+        if possible_geno_offsprings.get(all_offsprings_genotypes[i]) is None:
+            logging.debug('sample %s shows mendelian error with %s for parental genotype %s'%(ordered_sample[i],
+                                                                                              all_offsprings_genotypes[i],
+                                                                                              geno_parents))
+            samples_with_mendelian_error.append(ordered_sample[i])
+    return samples_with_mendelian_error
 
 def phased_snps_to_joinmap(vcf_file, sex_info, mother, father, geno_qual_threshold, output_markers, output_vcf, max_missing_offspring):
     sample_to_sex,sex_to_sample, ordered_sample = load_sex_info(sex_info)
@@ -374,16 +519,16 @@ def phased_snps_to_joinmap(vcf_file, sex_info, mother, father, geno_qual_thresho
         ordered_sample.remove(father)
         
     open_marker = utils_logging.open_output_file(output_markers, pipe=False)
-    possible_genotypes=get_offsprings_possible_genotypes_jm()
+    all_possible_genotypes=get_offsprings_possible_genotypes_jm()
     phased_markers = phased_snps_to_markers(vcf_file, ordered_sample, mother, father, geno_qual_threshold, max_missing_offspring)
     
     non_supported_genotypes=Counter()
     non_supported_markers=0
     bad_pattern=0
     
-    for geno_parents, all_offsprings_genotypes, phased_vcf_record in phased_markers:
-        name = get_list_of_SNPs_name(phased_vcf_record)
-        out = output_marker_in_joinmap(name, possible_genotypes, ordered_sample, geno_parents, all_offsprings_genotypes, max_missing_offspring)
+    for geno_parents, all_offsprings_genotypes, phased_vcf_records in phased_markers:
+        name = get_list_of_SNPs_name(phased_vcf_records)
+        out = output_marker_in_joinmap(name, all_possible_genotypes, ordered_sample, geno_parents, all_offsprings_genotypes, max_missing_offspring)
         if out is None:
             logging.info("Non supported genotype in parent %s for marker %s"%(geno_parents,name))
             non_supported_markers+=1
@@ -494,7 +639,7 @@ def phased_snps_to_carthagene(vcf_file, sex_info, mother, father, geno_qual_thre
 def output_marker_in_joinmap(name, possible_genotypes, ordered_samples, geno_parents, all_offsprings_genotypes, max_missing_offspring):
     possible_offspring_genotypes = possible_genotypes.get(geno_parents)
     if not possible_offspring_genotypes:
-        return 
+        return None
     all_sample_out=[]
     bad_offsprings=0
     
@@ -577,11 +722,15 @@ def output_marker_in_cartagene(name, possible_genotypes, ordered_samples, geno_p
     
     return return_female, return_male
 
-def process_genotypes_of_a_locus(phased_genotype_mother,phased_genotype_father,
+def compare_offspring_haplotype_to_parents(phased_genotype_mother,phased_genotype_father,
                                  phased_vcf_record, samples,
                                  genotype_quality_threshold=20,
                                  max_missing_offspring=5,
-                                 perfect_match=False):
+                                 perfect_match=False,
+                                 allow_mendelian_error=True):
+    """This Method will compare the offspring haplotype to the parental haplotype.
+    It returns the single digit haplotype code genotypes that correspond to one or several SNP.
+    If allow_mendelian_error is set then it will report a separate code for things that looks like mendelian errors."""
     #get the parents haplotypes
     set_parents_haplotypes = Counter()
     hm1,hm2 = merge_phased_genotype(phased_genotype_mother)
@@ -600,7 +749,8 @@ def process_genotypes_of_a_locus(phased_genotype_mother,phased_genotype_father,
     for hap in list_parents_haplotypes:
         parents_haplotypes[hap]=i
         i+=1
-    
+    mendelian_error_allele=i
+    #Set the parental genotype based on the defined haplotypes
     genotype_mother=[str(parents_haplotypes.get(hm1)),str(parents_haplotypes.get(hm2))]
     genotype_mother.sort()
     genotype_father=[str(parents_haplotypes.get(hf1)),str(parents_haplotypes.get(hf2))]
@@ -614,10 +764,24 @@ def process_genotypes_of_a_locus(phased_genotype_mother,phased_genotype_father,
     logging.debug("Set parental haplotypes to "+str(parents_haplotypes)+" where mother is "+str(genotype_mother)+" and father is "+str(genotype_father))
 
     for i in range(len(samples)):
+        non_informative=False
         haplo_off1,haplo_off2=merge_phased_genotype(all_offspring_genotype_high_qual[i])
         allele1 = parents_haplotypes.get(haplo_off1)
         allele2 = parents_haplotypes.get(haplo_off2)
-        if haplo_off1.count('.')==len(haplo_off1)  or haplo_off2.count('.')==len(haplo_off2) :
+                
+        #Check for the presence of confident haplotype that shows Mendelian error
+        m_haplo_off1, m_haplo_off2 = match_haplotypes_to_parents(list_parents_haplotypes, haplo_off1, haplo_off2)
+        if m_haplo_off1 is None or m_haplo_off2 is None:
+            if m_haplo_off1 is None:
+                logging.debug('Mendelian error in haplotype %s'%haplo_off1)
+                if allow_mendelian_error:
+                    allele1=mendelian_error_allele
+            if m_haplo_off2 is None:
+                logging.debug('Mendelian error in haplotype %s'%haplo_off2)
+                if allow_mendelian_error:
+                    allele2=mendelian_error_allele
+                
+        if haplo_off1.count('.')==len(haplo_off1) or haplo_off2.count('.')==len(haplo_off2) :
             logging.debug("For "+samples[i]+" confident haplotypes: "+haplo_off1+" "+haplo_off2+" have no information")
             
         else:
@@ -626,9 +790,10 @@ def process_genotypes_of_a_locus(phased_genotype_mother,phased_genotype_father,
             if (allele1 is None or allele2 is None) and not perfect_match :
                 #Check for imperfect matches
                 m_haplo_off1, m_haplo_off2 = match_haplotypes_to_parents(list_parents_haplotypes, haplo_off1, haplo_off2)
-                allele1 = parents_haplotypes.get(m_haplo_off1)
-                allele2 = parents_haplotypes.get(m_haplo_off2)
+                if allele1 is None: allele1 = parents_haplotypes.get(m_haplo_off1)
+                if allele2 is None: allele2 = parents_haplotypes.get(m_haplo_off2)
                 logging.debug("For "+samples[i]+" confident haplotypes: "+haplo_off1+" "+haplo_off2+" with imperfect match to "+str(allele1)+"-"+str(allele2))
+            #This part assume mendelian segregation of the markers and try to find a match using information of one of the allele
             if (allele1 is None or allele2 is None) and not perfect_match :
                 if allele1 != None:
                     if str(allele1) in genotype_mother and str(allele1) in genotype_father:
@@ -666,15 +831,14 @@ def process_genotypes_of_a_locus(phased_genotype_mother,phased_genotype_father,
                         m_haplo_off1, dummy = match_haplotypes_to_parents([hm1,hm2], haplo_off1, '')
                         allele1 = parents_haplotypes.get(m_haplo_off1)
                         logging.debug("For "+samples[i]+" Knowing "+str(allele2)+" is paternal, imperfect match "+haplo_off1+" to ["+hm1+","+hm2+"] resolve to "+str(allele1))
-                
-            if (allele1 is None and allele2 is None) and not perfect_match:
-                if haplo_off1 == haplo_off2:
+            #This also assume mendelian segregation and check in independent parents the presence of the same allele 
+            if (allele1 is None and allele2 is None) and not perfect_match and haplo_off1 == haplo_off2:
                     m_haplo_off1, dummy = match_haplotypes_to_parents([hm1,hm2], haplo_off1, '')
                     m_haplo_off2, dummy = match_haplotypes_to_parents([hf1,hf2], haplo_off1, '')
                     allele1 = parents_haplotypes.get(m_haplo_off1)
                     allele2 = parents_haplotypes.get(m_haplo_off2)
                     logging.debug("For "+samples[i]+" Because "+haplo_off1+"="+haplo_off2+" mathing them to independent parent resolve to "+str(allele1)+" and "+str(allele2))
-            #print samples[i],haplo_off1,haplo_off2,m_haplo_off1,m_haplo_off2,allele1,allele2
+        
         if allele1 is None or allele2 is None: 
             missing_offspring+=1
             if allele1 is None: allele1='.'
@@ -692,38 +856,36 @@ def process_genotypes_of_a_locus(phased_genotype_mother,phased_genotype_father,
         logging.info("nb missing offspring = %s>%s: %s"%(missing_offspring,max_missing_offspring,name))
     #print all_samples_genotypes
     return geno_parents,all_samples_genotypes
-        
-def match_haplotypes_to_parents(list_parents_haplotypes, ho1, ho2, max_missing_genotype=10, max_mendelian_error=50):
-    """This method take two haplotypes from an offspring and match them against the parental haplotypes.
-    @return the matching parental haplotypes or the offspling haplotype if the parental haplotype wasn't found."""
-    def check_one_haplotype(all_results, h1, h2):
-        res=hamming1(h1,h2)
-        if all_results.has_key(res):
-            all_results[res].append(h1)
-        else:
-            all_results[res]=[h1]
-    ret1=ret2=None
-    all_results_1={}
+
+def match_haplotype_to_parents(list_parents_haplotypes, haplotype_offspring):
+    """This method take one haplotype from an offspring and match them against the parental haplotypes.
+    @return the matching parental haplotypes, the offspring if the parental haplotype wasn't found or None if Mendelian error"""
+    all_results={}
     #print 'parent haplotypes = %s'%(' '.join(list_parents_haplotypes))
     for haplotype in list_parents_haplotypes:
-        check_one_haplotype(all_results_1, haplotype, ho1)
-    scores = all_results_1.keys()
+        res=hamming1(haplotype,haplotype_offspring)
+        if all_results.has_key(res):
+            all_results[res].append(haplotype)
+        else:
+            all_results[res]=[haplotype]
+
+    scores = all_results.keys()
     scores.sort(reverse=False)
-    #print '%s --> best score =%s (%s)'%(ho1,scores[0],', '.join([str(val) for val in scores]))
-    if len(all_results_1.get(scores[0]))==1 and scores[0]<max_missing_genotype:
-        ret1=all_results_1.get(scores[0])[0]
+    #print '%s --> %s best score =%s (%s)'%(haplotype_offspring,len(all_results.get(scores[0])), scores[0], ', '.join([str(val) for val in scores]))
+    if len(all_results.get(scores[0]))>1:
+        #Can't discriminate between two genotypes
+        return haplotype_offspring
+    elif scores[0]>=mendelian_error:
+        #Mendelian error
+        return None
     else:
-        ret1=ho1
-    all_results_2={}
-    for haplotype in list_parents_haplotypes:
-        check_one_haplotype(all_results_2, haplotype, ho2)
-    scores = all_results_2.keys()
-    scores.sort(reverse=False)
-    #print '%s --> best score =%s (%s)'%(ho2,scores[0],', '.join([str(val) for val in scores]))
-    if len(all_results_2.get(scores[0]))==1 and scores[0]<max_missing_genotype:
-        ret2=all_results_2.get(scores[0])[0]
-    else:
-        ret2=ho2
+        return all_results.get(scores[0])[0]
+    
+def match_haplotypes_to_parents(list_parents_haplotypes, ho1, ho2):
+    """This method take two haplotypes from an offspring and match them against the parental haplotypes.
+    @return the matching parental haplotypes or the offspring if the parental haplotype wasn't found."""
+    ret1=match_haplotype_to_parents(list_parents_haplotypes, ho1)
+    ret2=match_haplotype_to_parents(list_parents_haplotypes, ho2)
     return ret1,ret2
 
 
@@ -733,21 +895,19 @@ def hamming1(str1, str2):
     
 def not_equal(str1,str2):
     """This function compare two single position haplotypes and return 0 in case of equality 1 in case of missing genotype and 50 in case of conflicting haplotype""" 
-    if str1=='.':
-        return 1
-    elif str2=='.':
+    if str1=='.' or str2=='.':
         return 1
     elif str1==str2:
         return 0
     else:
-        return 50
+        return mendelian_error
     
 def get_genotype_for_list_of_SNPs(list_vcf_record, samples, genotype_quality_threshold=0, depth_threshold=0):
     """This script will create a list of genotype one for each offsping removing any genotype that does not pass the genotype quality of depth thresholds."""
     all_samples_genotype=[]
     for sample in samples:
         all_samples_genotype.append([])
-        
+
     for vcf_record in list_vcf_record:
         genotypes=vcf_record.get_all_genotype(sample_list=samples)
         genotype_qualities=vcf_record.get_all_genotype_quality(sample_list=samples)
@@ -973,56 +1133,38 @@ def _verifyOption(options):
 if __name__=="__main__":
     main()
 
-
-if __name__=="1__main__":
-    """"""
-    utils_logging.init_logging()
-    vcf_file = sys.argv[1]
-    sex_info_file = sys.argv[2]
-    mother=sys.argv[3]
-    father=sys.argv[4]
-    output_file=sys.argv[5]
-    output_vcf=sys.argv[6]
-    if len(sys.argv)>7:
-        output_genoqual=int(sys.argv[7])
-    else:
-        output_genoqual=20
-    snps_to_joinmap(vcf_file, sex_info_file, mother, father, geno_qual_threshold=output_genoqual, output_markers=output_file,
-                    output_vcf=output_vcf)
-    
-    
-    
-if __name__=="1__main__":
-    """"""
-    utils_logging.init_logging()
-    vcf_file = sys.argv[1]
-    sex_info_file = sys.argv[2]
-    mother=sys.argv[3]
-    father=sys.argv[4]
-    output_file=sys.argv[5]
-    output_vcf=sys.argv[6]
-    if len(sys.argv)>7:
-        output_genoqual=int(sys.argv[7])
-    else:
-        output_genoqual=20
-    phased_snps_to_joinmap(vcf_file, sex_info_file, mother, father, geno_qual_threshold=output_genoqual,
-                           output_markers=output_file, output_vcf=output_vcf)
-    
-    
-if __name__=="1__main__":
-    """"""
-    utils_logging.init_logging()
-    vcf_file = sys.argv[1]
-    sex_info_file = sys.argv[2]
-    mother=sys.argv[3]
-    father=sys.argv[4]
-    male_output_file=sys.argv[5]
-    female_output_file=sys.argv[6]
-    output_vcf=sys.argv[7]
-    
-    snps_to_carthagene(vcf_file, sex_info_file, mother, father, 20,
-                       male_output_file, female_output_file, output_vcf)
 if __name__=="1__main__":
     vcf_file=sys.argv[1]
     normalization_factors={"MP":1,"FP":1.1194}
     detect_missing_allele(vcf_file, normalization_factors=normalization_factors)
+
+if __name__=="1__main__":
+    all_h=[0,1,2,3]
+    all_g=[]
+    parents=[]
+    for i in range(len(all_h)):
+        for j in range(i,len(all_h)):
+            all_g.append("%s/%s"%(all_h[i],all_h[j]))
+    for g1 in all_g:
+        for g2 in all_g:
+            parents.append('%s %s'%(g1,g2))
+    for parent in parents:
+        p1,p2=parent.split()
+        haplo1=set(p1.split('/'))
+        haplo2=set(p2.split('/'))
+        haplo1.add('.')
+        haplo2.add('.')
+        offsprings=set()
+        for h1 in haplo1:
+            for h2 in haplo2:
+                offsprings.add('"%s":0'%'/'.join(sorted([h1,h2])))
+        print '"%s" : {%s},'%(parent, ', '.join(offsprings))
+    sys.exit(0)       
+    list_parents_haplotypes=['11','10']
+    ho1='1.'
+    ho2='01'
+    for offspring in [ho1,ho2]:
+        match_haplotypes_to_parents
+    res = match_haplotypes_to_parents(list_parents_haplotypes, ho1, ho2)
+    
+    print res

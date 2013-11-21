@@ -5,6 +5,7 @@ from io import StringIO
 
 TYPE_PRINT='print_out'
 TYPE_RUN_LOCAL='run'
+TYPE_RUN_SGE='sge'
 
 RUNNER_TYPE=[TYPE_PRINT, TYPE_RUN_LOCAL]
 
@@ -61,3 +62,7 @@ def run_command_no_wait(command):
 
 def set_command_to_run_localy():
     _default_instance.set_command_to_run_localy()
+
+def set_command_to_print():
+    _default_instance.set_command_to_print()
+    

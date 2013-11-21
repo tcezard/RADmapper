@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 '''
-Created on 19 March  2012
+Created on 31 Oct 2013
 @author: tcezard
 '''
 import sys, os
@@ -18,131 +18,93 @@ from RAD_assemble_read2 import run_all_fastq_files
 from utils.utils_commands import get_output_stream_from_command
 from collections import Counter
 import multiprocessing
+from collections import Counter
 
-max_nb_file=100
+header_to_record=["length","known_novel"]
+header_to_ignore=["#locus", "#contig", "coverage","coverage_mrk_dup", "nb_sample"]
 
-def submit_command_to_sge(command):
-    print "submit %s to cluster"%command
-    
-def merge_all_bam_files(all_bam_files, current_directory):
-    if len(all_bam_files) == 1:
-        return all_bam_files[0]
-    elif len(all_bam_files)>max_nb_file:
-        result_from_merge=[]
-        for i in range(0,len(all_bam_files),max_nb_file):
-            output_file=''
-            result_from_merge.append(output_file)
-            #commands.append(generate_merge_command(all_bam_files[i:i+max_nb_file], output_file))
-            
-        return merge_all_bam_files(result_from_merge)
-    else:
-        #Merge max_nb_file or less bam files
-        output_file=''
-        generate_merge_command(all_bam_files, output_file)
-        
-def generate_merge_command(all_bam_files, output_file):
-    command = 'java -jar -Xmx2G  ~/workspace/Picard/dist/MergeSamFilesWithCat.jar VALIDATION_STRINGENCY=SILENT CAT_SEQUENCE_DICTIONARIES=True USE_THREADING=True O=%s '%(output_file)
-    inputs=['I=%s'%file for file in all_bam_files]
-    command += ' '.join(inputs)
-    
-        
+def parse_coverage_file(coverage_file, all_loci_per_sample={"all_sample":Counter()}, all_loci_mrk_dup_per_sample={"all_sample":Counter()},
+                        all_loci_characteristic={}, all_loci=set(), all_samples=set(), all_characteristics=set()):
+    samples_index={}
+    characteristic_index={}
 
-def merge_all_bam_files_from_directory(directory):
-    directory=os.path.abspath(directory)
-    all_bam_files = glob(os.path.join(directory,'*_dir','*_dir','*_corrected_sorted_mrk_dup_fixed.bam'))
-    bam_file = merge_all_bam_files(all_bam_files)
-    
-def merge_bam_files(directory):
-    directory=os.path.abspath(directory)
-    all_bam_files = glob(os.path.join(directory,'*_dir','*_corrected_sorted_mrk_dup_fixed.bam'))
-    output_file = os.path.join(directory,'%s_files.bam'%len(all_bam_files))
-    command = 'java -jar -Xmx2G  ~/workspace/Picard/dist/MergeSamFilesWithCat.jar VALIDATION_STRINGENCY=SILENT CAT_SEQUENCE_DICTIONARIES=True USE_THREADING=True O=%s '%(output_file)
-    inputs=['I=%s'%file for file in all_bam_files]
-    command += ' '.join(inputs)
-    return command_runner.run_command(command)
+    with open(coverage_file) as open_file:
+        for line in open_file:
+            if line.startswith('#'):
+                sp_line = line.strip().split('\t')
+                for i, element in enumerate(sp_line):
+                    if element in header_to_ignore:
+                        continue
 
+                    if element in header_to_record:
+                        characteristic_index[i]=element
+                        all_loci_characteristic[element]={}
+                        all_characteristics.add(element)
+                    else:
+                        samples_index[i]=element
+                        if element.endswith('mrk_dup'):
+                            if not all_loci_mrk_dup_per_sample.has_key(element):
+                                all_loci_mrk_dup_per_sample[element]=Counter()
+                        elif not all_loci_per_sample.has_key(element):
+                            all_loci_per_sample[element]=Counter()
+                            all_samples.add(element)
 
-def merge_contigs_files(directory):
-    all_fasta_files = glob(os.path.join(directory,'*_dir','best_assembly.fa'))
-    output_file = os.path.join(directory,'%s_best_assembly.fa'%len(all_fasta_files))
-    command = 'cat %s > %s '%(' '.join(all_fasta_files), output_file)
-    return command_runner.run_command(command)
-
-def merge_snps_files(directory):
-    return_code=0
-    all_vcf_files = glob(os.path.join(directory,'*_dir','*samtools.vcf'))
-    output_file_body = os.path.join(directory,'%s_snps_files.vcf.body'%len(all_vcf_files))
-    command = 'cat %s  | egrep -v "^#" > %s '%(' '.join(all_vcf_files), output_file_body)
-    if return_code==0:
-        return_code = command_runner.run_command(command)
-    output_file_header = os.path.join(directory,'%s_snps_files.vcf.header'%len(all_vcf_files))
-    command = 'grep  "^#" %s > %s '%(all_vcf_files[0], output_file_header)
-    if return_code==0:
-        return_code = command_runner.run_command(command)
-    output_file = os.path.join(directory,'%s_snps_files.vcf'%len(all_vcf_files))
-    command = 'cat %s %s > %s '%(output_file_header, output_file_body, output_file)
-    if return_code==0:
-        return_code = command_runner.run_command(command)
-    command = 'rm %s %s'%(output_file_header, output_file_body)
-    if return_code==0:
-        return_code = command_runner.run_command(command)
-    return return_code
+            else:
+                sp_line = line.strip().split('\t')
+                all_loci.add(sp_line[0])
+                for i, element in enumerate(sp_line):
+                    if i in samples_index.keys():
+                        sample = samples_index.get(i)
+                        if sample.endswith("mrk_dup"):
+                            all_loci_mrk_dup_per_sample[sample][sp_line[0]]+=int(sp_line[i])
+                            all_loci_mrk_dup_per_sample["all_sample"][sp_line[0]]+=int(sp_line[i])
+                        else:
+                            all_loci_per_sample[sample][sp_line[0]]+=int(sp_line[i])
+                            all_loci_per_sample["all_sample"][sp_line[0]]+=int(sp_line[i])
+                    elif i in characteristic_index:
+                        all_loci_characteristic[characteristic_index.get(i)][sp_line[0]]=sp_line[i]
+    return  (all_loci_per_sample, all_loci_mrk_dup_per_sample, all_loci_characteristic,
+             all_loci, all_samples, all_characteristics)
 
 
-def merge_all_bam_files_from_directories(directory):
-    directory=os.path.abspath(directory)
-    all_bam_files = glob(os.path.join(directory,'*_dir','*_files.bam'))
-    output_file = os.path.join(directory,'all_consensus_merged.bam')
-    command = 'java -jar -Xmx2G  ~/workspace/Picard/dist/MergeSamFilesWithCat.jar VALIDATION_STRINGENCY=SILENT CAT_SEQUENCE_DICTIONARIES=True USE_THREADING=True O=%s '%(output_file)
-    inputs=['I=%s'%file for file in all_bam_files]
-    command += ' '.join(inputs)
-    return command_runner.run_command(command)
-
-def merge_all_contigs_files_from_directories(directory):
-    all_fasta_files = glob(os.path.join(directory,'*_dir','*_best_assembly.fa'))
-    output_file = os.path.join(directory,'all_consensus_assembly.fa')
-    command = 'cat %s > %s '%(' '.join(all_fasta_files), output_file)
-    return command_runner.run_command(command)
-
-def merge_all_snps_files_from_directories(directory):
-    return_code=0
-    all_vcf_files = glob(os.path.join(directory,'*_dir','*_snps_files.vcf'))
-    output_file_body = os.path.join(directory,'all_consensus_snps_files.vcf.body')
-    command = 'cat %s  | egrep -v "^#" > %s '%(' '.join(all_vcf_files), output_file_body)
-    if return_code==0:
-        return_code = command_runner.run_command(command)
-    output_file_header = os.path.join(directory,'all_consensus_snps_files.vcf.header')
-    command = 'grep  "^#" %s > %s '%(all_vcf_files[0], output_file_header)
-    if return_code==0:
-        return_code = command_runner.run_command(command)
-    output_file = os.path.join(directory,'all_consensus_snps_files.vcf')
-    command = 'cat %s %s > %s '%(output_file_header, output_file_body, output_file)
-    if return_code==0:
-        return_code = command_runner.run_command(command)
-    command = 'rm %s %s'%(output_file_header, output_file_body)
-    if return_code==0:
-        return_code = command_runner.run_command(command)
-    return return_code
+def merge_coverage(coverage_files, output_file):
+    all_loci_per_sample={"all_sample":Counter()}
+    all_loci_mrk_dup_per_sample={"all_sample":Counter()}
+    all_loci_characteristic={}
+    all_loci=set()
+    all_samples=set()
+    all_characteristics=set()
+    for file in coverage_files:
+        sys.stderr.write("load %s\n"%file)
+        parse_coverage_file(file, all_loci_per_sample, all_loci_mrk_dup_per_sample,
+                            all_loci_characteristic, all_loci, all_samples, all_characteristics)
 
 
+    #We're done reading now onto writing
+    header=['#locus','coverage','coverage_mrk_dup']
+    header.extend(sorted(all_characteristics))
+    header.append('nb_sample')
+    header.extend(['%s\t%s_mrk_dup'%(sample,sample) for sample in sorted(all_samples)])
+    with open(output_file,'w') as open_output:
+        open_output.write('\t'.join(header  )+'\n')
+        for loci in sorted(all_loci):
+            final_out=[loci]
+            final_out.append(str(all_loci_per_sample["all_sample"].get(loci,0)))
+            final_out.append(str(all_loci_mrk_dup_per_sample["all_sample"].get(loci,0)))
+            for characteristics in sorted(all_characteristics):
+                final_out.append(all_loci_characteristic[characteristics].get(loci,""))
+            out=[]
+            nb_sample=0
+            for sample in sorted(all_samples):
+                out.append(str(all_loci_per_sample[sample].get(loci,0)) )
+                nb_dup=all_loci_mrk_dup_per_sample[sample+"_mrk_dup"].get(loci,0)
+                if nb_dup>2:
+                    nb_sample+=1
+                out.append(str(nb_dup))
+            final_out.append(str(nb_sample))
+            final_out.extend(out)
+            open_output.write('\t'.join(final_out)+'\n')
 
-def merge_results(directory):
-    return_code=0
-    return_code = merge_contigs_files(directory)
-    #if return_code==0:
-    #    return_code = merge_bam_files(directory)
-    if return_code==0:
-        return_code = merge_snps_files(directory)
-    return return_code
-
-def merge_all_results(directory):
-    return_code=0
-    #return_code = merge_all_bam_files_from_directories(directory)
-    if return_code==0:
-        return_code = merge_all_contigs_files_from_directories(directory)
-    if return_code==0:
-        return_code = merge_all_snps_files_from_directories(directory)
-    return return_code
 
 def main():
     #initialize the logging
@@ -156,14 +118,10 @@ def main():
         logging.warning(optparser.get_usage())
         logging.critical("Non valid arguments: exit")
         sys.exit(1)
-    if not options.print_commands:
-        command_runner.set_command_to_run_localy()
-    if options.debug:
-        utils_logging.init_logging(logging.DEBUG)
-    if options.final_merge:
-        return merge_all_results(options.consensus_dir)
-    else:
-        return merge_results(options.consensus_dir)
+    coverage_files=[options.coverage_files]
+    if len(args)>0:
+        coverage_files.extend(args)
+    merge_coverage(coverage_files,options.output_file)
     
 
 def _prepare_optparser():
@@ -175,14 +133,10 @@ def _prepare_optparser():
     
     optparser = OptionParser(version="None",description=description,usage=usage,add_help_option=False)
     optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
-    optparser.add_option("-d","--consensus_dir",dest="consensus_dir",type="string",
-                         help="Path to a directory containing fastq file (only extension .fastq will be processed). Default: %default")
-    optparser.add_option("--final_merge",dest="final_merge",action='store_true',default=False,
-                         help="Merge the already merged file. Default: %default")
-    optparser.add_option("--print",dest="print_commands",action='store_true',default=False,
-                         help="print commands instead of running them. Default: %default")
-    optparser.add_option("--debug",dest="debug",action='store_true',default=False,
-                         help="Output debug statements. Default: %default")
+    optparser.add_option("-c","--coverage_files",dest="coverage_files",type="string",
+                         help="Path to files that will be used to get the coverage information to merge. Default: %default")
+    optparser.add_option("-o","--output_file",dest="output_file",type="string",
+                         help="Path to the output file the merged results will be stored. Default: %default")
     return optparser
 
 
@@ -190,7 +144,12 @@ def _verifyOption(options):
     """Check if the mandatory option are present in the options objects.
     @return False if any argument is wrong."""
     arg_pass=True
-    
+    if not options.coverage_files or not os.path.exists(options.coverage_files):
+        logging.error("Coverage file can't be found. please specify an existing coverage file with -c")
+        arg_pass=False
+    if not options.output_file or not os.path.exists(os.path.dirname(os.path.abspath(options.coverage_files))):
+        logging.error("Output file can't be found or parent does not exist. please specify a valid output file with -o")
+        arg_pass=False
     return arg_pass
 
 

@@ -12,7 +12,58 @@ from utils import utils_param, utils_logging, compare_version_number,\
 import command_runner
 from utils.GenomeLoader import GenomeLoader
 from utils.parameters import Config_file_error
+from utils.FastaFormat import FastaReader
 
+
+def trim_fastq_to_length(fastq_file, output_file,  length):
+    #output_file = fastq_file+'trim%s'%length
+    opener='cat'
+    if fastq_file.endswith('.gz'):
+        opener='zcat'
+        
+    command = '''%s %s | awk '{if (NR%4==2 || NR%4==0){print substr($0, 1,%s)}else{print $0}}' > %s'''%(opener, fastq_file, length, output_file)
+    return_code = command_runner.run_command(command)
+    return  return_code
+
+
+
+def fastq_2_bam(fastq_file, rgid, qual, files_and_dir, fifo):
+    fastqToSam_jar=''
+    sam_file=''
+    rgid
+    run_fine=True
+    command="java -Xmx2G -jar %s F1=%s O=%s RG=%s LB=%s SM=%s, QUALITY_FORMAT=%s"%(fastqToSam_jar,fastq_file,sam_file,rgid,rgid,rgid,qual)
+    if fifo:
+        command+=" &"
+    return_code = command_runner.run_command(command)
+    if return_code is not 0:
+        run_fine = False 
+    files_and_dir.append(sam_file)
+    sam_file2_tmp='%s.sam.tmp'%os.path.join(output_dir,fastq_name)
+    if fifo:
+        if os.path.exists(sam_file2_tmp):
+            os.remove(sam_file2_tmp)
+        command="mkfifo %s"%sam_file2_tmp
+        return_code = command_runner.run_command( command)
+    command = """awk '{if (/^@/){}else{if (substr($1,length($1)-1,2)=="/2"){$1=substr($1,1,length($1)-2)}; $2+=129; printf "%s",$1; for (i=2;i<=NF;i++){printf "\\t%s",$i}; printf "\\n"}}' """
+    command+=""" %s > %s"""%(sam_file2,sam_file2_tmp)
+
+
+def get_fastq_length(fastq_file):
+    with open(fastq_file) as open_fastq: 
+        open_fastq.readline()
+        line2 = open_fastq.readline()
+        read_length = len(line2.strip())
+    return read_length
+
+def get_fasta_length(fasta_file):
+    length=0
+    with open(fasta_file) as open_fasta:
+        reader = FastaReader(open_fasta)
+        header,sequence = reader.next()
+        length=len(sequence)
+        
+    return length
 
 
 def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_dir=None, sample_name=None,
@@ -34,7 +85,8 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
         #logging.exception('Config_file_error:')
         logging.critical("You need to have the environment variable properly set to use that script")
         return False
-        
+
+    return_code=0
     files_and_dir=[]
     if fastq_file1.endswith('.gz'):
         fastq_file1_unzip,ext = os.path.splitext(fastq_file1)
@@ -53,6 +105,18 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
         fastq_file2=fastq_file2_unzip
         files_and_dir.append(fastq_file2)
     
+    length_fastq1=get_fastq_length(fastq_file1)
+    length_fasta=get_fasta_length(genome_file)
+
+
+    if length_fastq1>length_fasta:
+        longer_reads = True
+    else:
+        longer_reads = False
+    if length_fastq1>100 and length_fasta>100:
+        long_read=True
+    else: long_read = False
+        
     #Get the sample name
     if not sample_name:
         if fastq_file2:
@@ -72,7 +136,7 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
     else:
         if read_group:
             read_group_command='-r "%s"'%(read_group)
-            for element in read_group.split('\\t'):
+            for element in read_group.split(r'\\t'):
                 if element.startswith("ID"):
                     rgid=element.split(":")[1]
                 elif element.startswith("LB"):
@@ -95,88 +159,47 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
             
     
     samtools_bin=os.path.join(samtools_dir,'samtools')
-    
+
+
+
+    #Starts processing
+    if longer_reads:
+        #Trim the long read
+        fastq_file1_trim=fastq_file1+'_trim%s'%(length_fasta)
+        command = """awk '{if (NR%%2==0){print substr($0,1,%s)}else{print}}' %s > %s"""%(length_fasta,fastq_file1,fastq_file1_trim)
+        return_code = command_runner.run_command(command)
+        files_and_dir.append(fastq_file1_trim)
+        fastq_file1_long=fastq_file1
+        fastq_file1=fastq_file1_trim
     if output_dir is None: 
         output_dir=os.path.dirname(fastq_file1)
-    fastq_name, ext=os.path.splitext(os.path.basename(fastq_file1))
-    sai_file1='%s.sai'%os.path.join(output_dir,fastq_name)
-    illumina_str=""
-    if illumina:
-        illumina_str=" -I "
-    command='%s aln %s -t %s %s %s > %s'%(BWA_bin, illumina_str,thread, genome_file, fastq_file1, sai_file1)
-        
-    return_code = command_runner.run_command(command)
-    if return_code is not 0:
-        run_fine = False 
-    files_and_dir.append(sai_file1)
+
+
     if not fastq_file2:
-        #only one end so just run get the sorted bam file
-        bam_file=os.path.join(output_dir, sample_name)
-        command="""%s samse %s %s %s %s | %s view -bS - > %s"""%(BWA_bin, read_group_command, genome_file, sai_file1, fastq_file1, samtools_bin, bam_file )
-        return_code = command_runner.run_command( command)
-        if return_code is not 0:
-            run_fine = False 
-        files_and_dir.append(bam_file)
-        sorted_bam_file=os.path.join(output_dir, sample_name+'_sorted')
-        return_code = utils.sort_bam_file_per_coordinate(picard_dir, bam_file, sorted_bam_file, overwrite=True)
-        if return_code is not 0:
-            run_fine = False 
+        #if long_read:
+        #    sorted_bam_file = align_long_reads_se(fastq_file1, genome_file, output_dir, sample_name, thread, BWA_bin,
+        #                     samtools_bin, picard_dir, read_group_command, files_and_dir, illumina, fifo)
+        #else:
+        sorted_bam_file = align_short_reads_se(fastq_file1, genome_file, output_dir, sample_name, thread, BWA_bin,
+                                               samtools_bin, picard_dir, read_group_command, files_and_dir, illumina, fifo)
     else:
-        #Need to add to the first read the flag info specific to the paired end
-        sam_file=os.path.join(output_dir, sample_name+'.sam')
-        if fifo:
-            command="mkfifo %s"%sam_file
-            if os.path.exists(sam_file):
-                os.remove(sam_file)
-            return_code = command_runner.run_command( command)
-        command="""%s samse %s %s %s %s """%(BWA_bin, read_group_command,genome_file,sai_file1,fastq_file1)
-        command+="""| awk '{if (/^@/){ print }else{ $2+=73; printf "%s",$1; for (i=2;i<=NF;i++){printf "\\t%s",$i}; printf "\\n" }}'"""
-        command+=""" > %s"""%( sam_file )
-        if fifo:
-            command+=" &"
-        return_code = command_runner.run_command( command)
-        if return_code is not 0:
-            run_fine = False 
-        files_and_dir.append(sam_file)
-    
-        #Now convert the second read to sam
-        fastq_name, ext=os.path.splitext(os.path.basename(fastq_file2))
-        sam_file2='%s.sam'%os.path.join(output_dir,fastq_name)
-        if fifo:
-            command="mkfifo %s"%sam_file2
-            if os.path.exists(sam_file2):
-                os.remove(sam_file2)
-            return_code = command_runner.run_command( command)
-        
-        fastqToSam_jar=os.path.join(picard_dir,"FastqToSam.jar")
-        if illumina:
-            qual="Illumina"
-        else:
-            qual="Standard"
-        command="java -Xmx2G -jar %s F1=%s O=%s RG=%s LB=%s SM=%s, QUALITY_FORMAT=%s"%(fastqToSam_jar,fastq_file2,sam_file2,rgid,libid,smid,qual)
-        if fifo:
-            command+=" &"
-        return_code = command_runner.run_command(command)
-        if return_code is not 0:
-            run_fine = False 
-        files_and_dir.append(sam_file2)
-        sam_file2_tmp='%s.sam.tmp'%os.path.join(output_dir,fastq_name)
-        if fifo:
-            if os.path.exists(sam_file2_tmp):
-                os.remove(sam_file2_tmp)
-            command="mkfifo %s"%sam_file2_tmp
-            return_code = command_runner.run_command( command)
-        command = """awk '{if (/^@/){}else{if (substr($1,length($1)-1,2)=="/2"){$1=substr($1,1,length($1)-2)}; $2+=129; printf "%s",$1; for (i=2;i<=NF;i++){printf "\\t%s",$i}; printf "\\n"}}' """
-        command+=""" %s > %s"""%(sam_file2,sam_file2_tmp)
-        if fifo:
-            command+=" &"
-        return_code = command_runner.run_command(command)
-        if return_code is not 0:
-            run_fine = False 
-        files_and_dir.append(sam_file2_tmp)
-        
+        #if long_read:
+        #    sam_file = align_long_reads_pe(fastq_file1, fastq_file2, genome_file, output_dir, sample_name, thread, BWA_bin,
+        #                     samtools_bin, picard_dir, read_group_command, files_and_dir, illumina, fifo)
+        #else:
+        read1_sam_file,read2_sam_file = align_short_reads_pe(fastq_file1,fastq_file2, genome_file, output_dir,thread,
+                                                                BWA_bin, samtools_bin, picard_dir, read_group_command,
+                                                             rgid,libid,smid, files_and_dir, illumina, fifo)
+
+
+        if longer_reads:
+            #Now convert the first untrimmed read to sam
+            read1_long_sam_file = convert_untrimmed_read(fastq_file1_long,output_dir,rgid,libid,smid,picard_dir,
+                                                         files_and_dir, illumina, fifo)
+            read2_sam_file = '%s %s'%(read1_long_sam_file,read2_sam_file)
+            
         name_sorted_bam_file=os.path.join(output_dir, sample_name+'_sorted_name')
-        command = "cat %s %s | %s view -bS - | %s sort -n - %s"%(sam_file, sam_file2_tmp, samtools_bin, samtools_bin, name_sorted_bam_file)
+        command = "cat %s %s | %s view -bS - | %s sort -n - %s"%(read1_sam_file,read2_sam_file, samtools_bin, samtools_bin, name_sorted_bam_file)
         return_code = command_runner.run_command(command)
         if return_code is not 0:
             run_fine = False
@@ -185,7 +208,10 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
         sorted_bam_file=os.path.join(output_dir, sample_name+'_sorted')
         #change_consensus_on_read2
         command ="%s view -h %s | "%(samtools_bin,name_sorted_bam_file+'.bam')
-        command +="python %s | "%path_to_script
+        if longer_reads:
+            command +="python %s -p | "%path_to_script
+        else:
+            command +="python %s | "%path_to_script
         command +="%s view -bS - | %s sort - %s"%(samtools_bin,  samtools_bin, sorted_bam_file)
         return_code = command_runner.run_command(command)
         if return_code is not 0:
@@ -203,11 +229,203 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
         return_code = remove_file(files_and_dir)
         if return_code is not 0:
             run_fine = False
-    
     return run_fine
 
 
+
+def align_bwa_long(fastq_file1, fastq_file2, genome_file, sample_name,  read_group, analysis_type, output_dir,
+                    BWA_bin, samtools_bin, picard_dir,  thread, sort, illumina, files_and_dir):
+    if illumina:
+        logging.error("long read alignment do not support illumina format")
+        return False
+    if analysis_type is not None:
+        logging.error("long read alignment do not support %s analsyis"%(analysis_type))
+        return False
+
+    run_fine=True
+    tmp_bam_file=os.path.join(output_dir, sample_name+'_tmp.bam')
+    files_and_dir.append(tmp_bam_file)
+    if fastq_file2:
+        command = '%s mem -t %s %s %s %s | %s view -bS - > %s'%(BWA_bin, thread, genome_file, fastq_file1, fastq_file2, samtools_bin, tmp_bam_file)
+    else:
+        command = '%s bwasw -t %s %s %s | %s view -bS - > %s'%(BWA_bin, thread, genome_file, fastq_file1, samtools_bin, tmp_bam_file)
+    if run_fine: return_code = command_runner.run_command(command)
+    if return_code is not 0:
+        run_fine = False 
     
+    if sort:
+        bam_file=os.path.join(output_dir, sample_name+'_sorted.bam')
+        sort_order='coordinate'
+    else:
+        bam_file=os.path.join(output_dir, sample_name+'.bam')
+        sort_order='queryname'
+    
+    #bwa screw up the mate information 
+    fixmate_jar = os.path.join(picard_dir, 'FixMateInformation.jar')
+    fixed_bam_file=os.path.join(output_dir, sample_name+'_fixed.bam')
+    command = 'java -jar -Xmx2G %s I=%s O=%s SO=%s VALIDATION_STRINGENCY=LENIENT'%(fixmate_jar, tmp_bam_file, fixed_bam_file, sort_order)
+    if run_fine: return_code = command_runner.run_command(command)
+    if return_code is not 0:
+        run_fine = False
+    
+    if read_group:
+        files_and_dir.append(fixed_bam_file)
+        read_group_param=[]
+        read_group_elements = extract_read_group(read_group)
+        replace_readgroup_jar = os.path.join(picard_dir, 'AddOrReplaceReadGroups.jar')
+        for key in ['ID', 'LB', 'PL', 'PU', 'SM', 'CN']:
+            if read_group_elements.has_key(key):
+                read_group_param.append('%s="%s"'%(key, read_group_elements.get(key)))
+            else:
+                read_group_param.append('%s=0'%(key))
+
+        command = 'java -jar -Xmx2G %s I=%s O=%s SO=%s %s VALIDATION_STRINGENCY=LENIENT'%(replace_readgroup_jar, fixed_bam_file, bam_file, sort_order, ' '.join(read_group_param))
+        if run_fine: return_code = command_runner.run_command(command)
+        if return_code is not 0: run_fine = False
+    else:
+        bam_file=os.path.join(output_dir, sample_name+'.bam')
+        command='mv %s %s'%(fixed_bam_file, bam_file)
+        if run_fine: return_code = command_runner.run_command(command)
+        if return_code is not 0: run_fine = False
+    if run_fine:
+        return bam_file
+    else:
+        return False
+    
+def align_short_reads_se(fastq_file1,  genome_file, output_dir, sample_name, thread, 
+                      BWA_bin, samtools_bin, picard_dir, read_group_command, files_and_dir, illumina, fifo):
+    
+    fastq_name, ext=os.path.splitext(os.path.basename(fastq_file1))
+    sai_file1='%s.sai'%os.path.join(output_dir,fastq_name)
+    illumina_str=""
+    if illumina:
+        illumina_str=" -I "
+    command='%s aln %s -t %s %s %s > %s'%(BWA_bin, illumina_str,thread, genome_file, fastq_file1, sai_file1)
+        
+    return_code = command_runner.run_command(command)
+    if return_code is not 0:
+        run_fine = False 
+    files_and_dir.append(sai_file1)
+    
+    #only one end so just run get the sorted bam file
+    bam_file=os.path.join(output_dir, sample_name)
+    command="""%s samse %s %s %s %s | %s view -bS - > %s"""%(BWA_bin, read_group_command, genome_file, sai_file1, fastq_file1, samtools_bin, bam_file )
+    return_code = command_runner.run_command( command)
+    if return_code is not 0:
+        run_fine = False 
+    return bam_file
+
+
+def align_short_reads_pe(fastq_file1, fastq_file2, genome_file, output_dir, thread,
+                      BWA_bin, samtools_bin, picard_dir, read_group_command, rgid,libid,smid,
+                      files_and_dir, illumina, fifo):
+    #Align the first read
+    fastq_name, ext=os.path.splitext(os.path.basename(fastq_file1))
+    sai_file1='%s.sai'%os.path.join(output_dir,fastq_name)
+    illumina_str=""
+    if illumina:
+        illumina_str=" -I "
+    command='%s aln %s -t %s %s %s > %s'%(BWA_bin, illumina_str,thread, genome_file, fastq_file1, sai_file1)
+
+    return_code = command_runner.run_command(command)
+    if return_code is not 0:
+        run_fine = False
+    files_and_dir.append(sai_file1)
+    #Need to add to the first read the flag info specific to the paired end
+    read1_sam_file=os.path.join(output_dir, fastq_name+'.sam')
+    if fifo:
+        command="mkfifo %s"%read1_sam_file
+        if os.path.exists(read1_sam_file):
+            os.remove(read1_sam_file)
+        return_code = command_runner.run_command( command)
+    command="""%s samse %s %s %s %s """%(BWA_bin, read_group_command,genome_file,sai_file1,fastq_file1)
+    command+="""| awk '{if (/^@/){ print }else{ $2+=73; printf "%s",$1; for (i=2;i<=NF;i++){printf "\\t%s",$i}; printf "\\n" }}'"""
+    command+=""" > %s"""%( read1_sam_file )
+    if fifo:
+        command+=" &"
+    return_code = command_runner.run_command( command)
+    if return_code is not 0:
+        run_fine = False
+    files_and_dir.append(read1_sam_file)
+
+    #Now convert the second read to sam
+    fastq_name, ext=os.path.splitext(os.path.basename(fastq_file2))
+    sam_file2='%s.sam'%os.path.join(output_dir,fastq_name)
+    if fifo:
+        command="mkfifo %s"%sam_file2
+        if os.path.exists(sam_file2):
+            os.remove(sam_file2)
+        return_code = command_runner.run_command( command)
+
+    fastqToSam_jar=os.path.join(picard_dir,"FastqToSam.jar")
+    if illumina:
+        qual="Illumina"
+    else:
+        qual="Standard"
+    command="java -Xmx2G -jar %s F1=%s O=%s RG=%s LB=%s SM=%s, QUALITY_FORMAT=%s"%(fastqToSam_jar,fastq_file2,sam_file2,rgid,libid,smid,qual)
+    if fifo:
+        command+=" &"
+
+    return_code = command_runner.run_command(command)
+    if return_code is not 0:
+        run_fine = False
+    files_and_dir.append(sam_file2)
+
+    read2_sam_file='%s.tmp'%(sam_file2)
+    if fifo:
+        if os.path.exists(read2_sam_file):
+            os.remove(read2_sam_file)
+        command="mkfifo %s"%read2_sam_file
+        return_code = command_runner.run_command( command)
+    command = """awk '{if (/^@/){}else{if (substr($1,length($1)-1,2)=="/2"){$1=substr($1,1,length($1)-2)}; $2+=129; printf "%s",$1; for (i=2;i<=NF;i++){printf "\\t%s",$i}; printf "\\n"}}' """
+    command+=""" %s > %s"""%(sam_file2,read2_sam_file)
+    if fifo:
+        command+=" &"
+    return_code = command_runner.run_command(command)
+    if return_code is not 0:
+        run_fine = False
+    files_and_dir.append(read2_sam_file)
+    return read1_sam_file,read2_sam_file
+
+
+def convert_untrimmed_read(fastq_file1_long, output_dir, rgid,libid,smid, picard_dir, files_and_dir, illumina, fifo):
+    fastq_name, ext=os.path.splitext(os.path.basename(fastq_file1_long))
+    sam_file2='%s.sam'%os.path.join(output_dir,fastq_name)
+    if fifo:
+        command="mkfifo %s"%sam_file2
+        if os.path.exists(sam_file2):
+            os.remove(sam_file2)
+        return_code = command_runner.run_command( command)
+
+    fastqToSam_jar=os.path.join(picard_dir,"FastqToSam.jar")
+    if illumina:
+        qual="Illumina"
+    else:
+        qual="Standard"
+    command="java -Xmx2G -jar %s F1=%s O=%s RG=%s LB=%s SM=%s, QUALITY_FORMAT=%s"%(fastqToSam_jar,fastq_file1_long,sam_file2,rgid,libid,smid,qual)
+    if fifo:
+        command+=" &"
+    return_code = command_runner.run_command(command)
+
+    if return_code is not 0:
+        run_fine = False
+    files_and_dir.append(sam_file2)
+    read1_long_sam='%s.tmp'%(sam_file2)
+    if fifo:
+        if os.path.exists(read1_long_sam):
+            os.remove(read1_long_sam)
+        command="mkfifo %s"%read1_long_sam
+        return_code = command_runner.run_command( command)
+    command = """awk '{if (/^@/){}else{if (substr($1,length($1)-1,2)=="/1"){$1=substr($1,1,length($1)-2)}; $2+=65; printf "%s",$1; for (i=2;i<=NF;i++){printf "\\t%s",$i}; printf "\\n"}}' """
+    command+=""" %s > %s"""%(sam_file2,read1_long_sam)
+    if fifo:
+        command+=" &"
+    return_code = command_runner.run_command(command)
+    if return_code is not 0:
+        run_fine = False
+    files_and_dir.append(read1_long_sam)
+    return read1_long_sam
+
 def remove_file(files_and_dir):
     return command_runner.run_command( 'rm -fr %s'%(' '.join(files_and_dir)))
 

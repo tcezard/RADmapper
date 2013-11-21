@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 '''
 Created on 19 March  2012
@@ -5,7 +6,7 @@ Created on 19 March  2012
 '''
 import sys, os, re
 from utils import utils_logging, utils_commands
-import logging, threading
+import logging
 from optparse import OptionParser
 from glob import glob
 import command_runner
@@ -25,6 +26,7 @@ LOCAS_ALIAS=["locas"]
 SOAPDENOVO_ALIAS=["soap","soapdenovo"]
 IDBA_ALIAS=["idba","idba_ud"]
 NO_ASSEMBLER=["None", "no", ""]
+
 
 def run_velvetOptimiser(fastq_file_name, low_k=19, high_k=99, outputdir='velvetopt', **kwarg):
     command='rm -rf %s'%outputdir
@@ -185,7 +187,7 @@ def run_soapdenovo(fastq_file_name, max_read_len=101, **kwarg):
 
 def run_idba(fastq_file_name, max_read_len=101, **kwarg):
     log_file='idba_ud.log'
-    command="/ifs/software/linux_x86_64/idba_ud-1.0.9/bin/idba_ud -r %s -o idba_ud --min_contig %s --num_threads 1 2>&1 >%s"%(fastq_file_name, max_read_len,log_file)
+    command="/ifs/software/linux_x86_64/idba_ud/idba_ud-1.0.9/bin/idba_ud -r %s -o idba_ud --min_contig %s --num_threads 1 2>&1 >%s"%(fastq_file_name, max_read_len,log_file)
     return_code = command_runner.run_command(command)
     contig_files = glob('idba_ud/contig.fa')
     contig_file_name=None
@@ -197,6 +199,7 @@ def pass_function(*args, **kwarg):
     pass
 
 def correct_contig_file(contig_file, site_name, min_contig_len=101):
+    """This function will change the name of the contigs and remove the small one"""
     dir_name=os.path.dirname(contig_file)
     corrected_file=os.path.join(dir_name,'contigs_corrected.fa')
     open_file = open(contig_file)
@@ -223,10 +226,16 @@ def run_assembly(assembly_function, fastq_file, output_dir=None, estimated_size=
     if output_dir and os.path.exists(output_dir):
         logging.debug('change directory to %s'%output_dir)
         current_dir=os.getcwd()
-        os.chdir(output_dir)
+        os.chdir(os.path.abspath(output_dir))
     contig_file = assembly_function(fastq_file, estimated_size=estimated_size)
     if contig_file:
         contig_file = os.path.abspath(contig_file)
+        merged_consensus = os.path.join(os.path.dirname(contig_file),'merged_consensus.fa')
+        if os.path.exists(merged_consensus):
+            logging.debug('remove the merged_consensus.fa that already exists before assembling')
+            command = 'rm -f %s'%(merged_consensus)
+            command_runner.run_command(command)
+    
     if current_dir:
         logging.debug('change directory back to %s'%current_dir)
         os.chdir(current_dir)
@@ -248,63 +257,86 @@ def get_best_assembly_merged(assembly_dir, read1_fasta, name, force_merge=False)
     best_assembly=None
     for contig_file2 in contigs_file_to_compare:
         output_dir=os.path.dirname(contig_file2)
-        merged_contig_file = merge_read1_and_read2_contigs(name, read1_fasta, contig_file2, output_dir)
+        merged_contig_file = merge_read1_and_read2_contigs(name, read1_fasta, contig_file2)
         if merged_contig_file:
             best_assembly=merged_contig_file
-            name=os.path.basename(os.path.dirname(contig_file2))
-            logging.info("Best assembly with %s: Merged"%name)
+            best_assembler_name=os.path.basename(os.path.dirname(contig_file2))
+            logging.info("Best assembly with %s: Merged"%best_assembler_name)
             break
     
     if best_assembly is None :
-        name=os.path.basename(os.path.dirname(contigs_file_to_compare[0]))
-        logging.info("Best assembly with %s: Concatenated"%name)
+        best_assembler_name=os.path.basename(os.path.dirname(contigs_file_to_compare[0]))
+        logging.info("Best assembly with %s: Concatenated"%best_assembler_name)
         best_assembly=os.path.join(assembly_dir,"merged_consensus.fa")
         if force_merge:
+            logging.info("Best assembly with %s: Force merged"%best_assembler_name)
             force_merge_consensus(read1_fasta, contigs_file_to_compare[0], best_assembly)
         else:
             concatenate_consensus([read1_fasta, contigs_file_to_compare[0]], best_assembly)
-    return best_assembly
+    return best_assembler_name,best_assembly
 
 def compare_fasta_length(fasta_rec1,fasta_rec2):
     h1, s1 = fasta_rec1
     h2, s2 = fasta_rec2
     return len(s2)-len(s1)
 
-def merge_read1_and_read2_contigs(name, read1_contig, read2_contigs, output_dir):
-    open_read2=open(read2_contigs)
-    all_fasta2_entries=[]
-    read2_reader = FastaReader(open_read2)
-    for header, sequence in read2_reader:
-        all_fasta2_entries.append((header,sequence))
+def merge_read1_and_read2_contigs(name, read1_contig, read2_contigs):
+    output_dir = os.path.dirname(read2_contigs)
+    output_file = os.path.join(output_dir,'merged_consensus.fa')
+    if os.path.exists(output_file):
+        logging.warning('%s already exist no need to merge'%output_file)
+        return output_file
+
+    all_fasta2_entries=[]    
+    with open(read2_contigs) as open_read2:
+        read2_reader = FastaReader(open_read2)
+        for header, sequence in read2_reader:
+            all_fasta2_entries.append((header,sequence))
     if len(all_fasta2_entries)==1:
-        return merge_2_contigs(name, read1_contig, read2_contigs, output_dir)
+        results = merge_2_contigs(name, read1_contig, read2_contigs, output_dir)
+        if results:
+            with open(output_file,'w') as open_output:
+                open_output.write('>%s\n%s\n'%results)
+            return output_file
     else:
         all_fasta2_entries.sort(cmp=compare_fasta_length)
-        merged_pair = None
+        merged_consensus = None
         remaining=[]
         for header,sequence in all_fasta2_entries:
             cur_pair=os.path.join(output_dir,header+".fa")
-            open_pair = open(cur_pair,'w')
-            open_pair.write(">%s\n%s\n"%(header,sequence))
-            open_pair.close()
-            if not merged_pair: 
-                merged_pair = merge_2_contigs(name, read1_contig, cur_pair, output_dir)
-                if not merged_pair:
+            with open(cur_pair,'w') as open_pair:
+                open_pair.write(">%s\n%s\n"%(header,sequence))
+            
+            if not merged_consensus: 
+                #If we have not successfully merged a read2 contig
+                results = merge_2_contigs(name, read1_contig, cur_pair, output_dir)
+                if not results:
                     remaining.append(cur_pair)
+                else:
+                    tmp_output_file=os.path.join(output_dir,'tmp_merged_consensus.fa')
+                    with open(tmp_output_file,'w') as open_output:
+                        open_output.write('>%s\n%s\n'%results)
+                    merged_consensus = tmp_output_file                    
             else:
-                additional_merged_pair = merge_2_contigs(name+"add", read1_contig, cur_pair, output_dir)
-                if additional_merged_pair:
+                results = merge_2_contigs(name+"add", read1_contig, cur_pair, output_dir)
+                #TODO: fix this as it doesn't seems to trim and the output file is the same as above     but in the mean time disable
+                if False and results:
+                    additional_merged_pair=os.path.join(output_dir,'tmp_merged_consensus.fa')
+                    with open(additional_merged_pair,'w') as open_output:
+                        open_output.write('>%s\n%s\n'%results)
                     #trim this contig
                     trim_additional_merged_contigs(cur_pair, additional_merged_pair)
                 remaining.append(cur_pair)
             
-        merge_file = os.path.join(output_dir,"merged_consensus.fa")
-        if merged_pair:
-            tmp = [merged_pair]
+        if merged_consensus:
+            tmp = [merged_consensus]
             tmp.extend(remaining)
-            concatenate_consensus(tmp,merge_file)
-            return merge_file
+            concatenate_consensus(tmp, output_file)
+            logging.debug('Merging successfully in %s'%output_file)
+            #TODO:delete the tmp file from the assembler directory
+            return output_file
         else:
+            logging.debug('Merging Failed in %s: %s'%(output_file, os.path.exists(output_file)))
             return None
 
 def trim_additional_merged_contigs(original_contig, merged_contig):
@@ -332,25 +364,23 @@ def trim_additional_merged_contigs(original_contig, merged_contig):
         if len(sequence)>100:
             open_contig.write(">%s\n%s\n"%(header,sequence))
         open_contig.close()
-    
+
 
 def concatenate_consensus(all_fasta_files,output_merge_file):
-    command = "cat %s > %s "%(' '.join(all_fasta_files), output_merge_file)
-    command_runner.run_command(command)
-
-#def concatenate_consensus(read1_consensus, read2_consensus, output_merge_file):
-#    open_output = open(output_merge_file,'w')
-#    open_read1 = open(read1_consensus)
-#    open_read2 = open(read2_consensus)
-#    fasta_reader1 = FastaReader(open_read1)
-#    read1_name, read1_sequence = fasta_reader1.next()
-#    open_read1.close()
-#    open_output.write(">%s\n%s\n"%(read1_name, read1_sequence))
-#    fasta_reader2 = FastaReader(open_read2)
-#    for read2_name, read2_sequence in fasta_reader2:
-#        open_output.write(">%s\n%s\n"%(read2_name, read2_sequence))
-#    open_read2.close()
-#    open_output.close()
+    if len(all_fasta_files) > 50:
+        counter=1
+        files_to_concatenate=[]
+        for i in range(0,len(all_fasta_files), 50):
+            output_merge_file_tmp="%s.%s"%(output_merge_file,counter)
+            concatenate_consensus(all_fasta_files[i:i+50],output_merge_file_tmp)
+            files_to_concatenate.append(output_merge_file_tmp)
+            counter+=1
+        concatenate_consensus(files_to_concatenate, output_merge_file)
+        command='rm -f %s'%(' '.join(files_to_concatenate))
+        command_runner.run_command(command)
+    else:
+        command = "cat %s > %s "%(' '.join(all_fasta_files), output_merge_file)
+        command_runner.run_command(command)
 
 
 def force_merge_consensus(read1_consensus, read2_consensus, output_merge_file):
@@ -363,9 +393,12 @@ def force_merge_consensus(read1_consensus, read2_consensus, output_merge_file):
     name="%s_forced_merged"%read1_name
     array=[read1_sequence]
     fasta_reader2 = FastaReader(open_read2)
+    print read2_consensus
     for read2_name, read2_sequence in fasta_reader2:
+        print read2_sequence
         array.append("N"*100)
-        array.append(read2_consensus)
+        array.append(read2_sequence)
+    
     open_output.write(">%s\n%s\n"%(name, ''.join(array)))
     open_read2.close()
     open_output.close()
@@ -393,23 +426,6 @@ def compare_contig_file(contig_file1,contig_file2):
         return nb_contig1-nb_contig2
 
 
-def run_all_assembler(fastq_file):
-    fastq_file=os.path.abspath(fastq_file)
-    output_dir='%s_dir'%fastq_file
-    if not os.path.exists(output_dir):
-        command='mkdir %s'%(output_dir)
-        return_code = command_runner.run_command(command)
-    #command='cd %s_dir'%fastq_file
-    #return_code = command_runner.run_command(command)
-    
-    run_assembly(run_velvetOptimiser,fastq_file,output_dir)
-    run_assembly(run_velvet,fastq_file,output_dir)
-    run_assembly(run_clc_assemble,fastq_file,output_dir)
-    run_assembly(run_abyss,fastq_file,output_dir)
-    run_assembly(run_locas,fastq_file,output_dir)
-    run_assembly(run_locasopt,fastq_file,output_dir)
-    run_assembly(run_soapdenovo,fastq_file,output_dir)
-
 def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=600, read1_fasta=None, name=None, force_merge=False):
     fastq_file=os.path.abspath(fastq_file)
     #output_dir='%s_dir'%fastq_file
@@ -417,8 +433,14 @@ def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated
         command='mkdir %s'%(output_dir)
         return_code = command_runner.run_command(command)
     for assembly_function in assembly_function_list:
-        (contig_file,nb_seq, max_len) = run_assembly(assembly_function,fastq_file,output_dir,estimated_size=estimated_size, name=name)
-    best_assembly_file = get_best_assembly_merged(output_dir, read1_fasta, name, force_merge )
+        #Assemble with provided assembler
+        (contig_file, nb_seq, max_len) = run_assembly(assembly_function,fastq_file,output_dir,estimated_size=estimated_size, name=name)
+        #Merge read one and read2 contig
+        if contig_file:
+            #TODO: This function gets run twice need to change that as the second run is not useful
+            merge_read1_and_read2_contigs(name, read1_contig=read1_fasta, read2_contigs=contig_file)
+        
+    best_assembler_name, best_assembly_file = get_best_assembly_merged(output_dir, read1_fasta, name, force_merge)
     command="cp %s %s"%(best_assembly_file, os.path.join(output_dir, "best_assembly.fa"))
     return_code = command_runner.run_command(command)
     return os.path.join(output_dir, "best_assembly.fa")
@@ -487,7 +509,6 @@ def main():
     if not options.print_command:
         command_runner.set_command_to_run_localy()
     start_time = time.time()
-    #comment = '%s: contig_align:%s, mismatches:%s site with 1 contig:%s site with more than 1 contig:%s'
     all_assembler_to_try = options.assembler_name.split(',')
     assembly_function_list=[]
     for assembler_name in all_assembler_to_try:
@@ -496,7 +517,10 @@ def main():
     if options.fastq_dir:
         run_all_fastq_files(options.fastq_dir,assembly_function_list, options.estimated_size, options.force_merge)
     elif options.fastq_file:
-        contig_file = run_one_fastq_file(options.fastq_file,assembly_function)
+        name=os.path.basename(options.fastq_file)[:-len("_2.fastq")]
+        output_dir=os.path.dirname(options.fastq_file)
+        read1_fasta=os.path.join(output_dir,name+"_1.fa")
+        contig_file = run_one_fastq_file(options.fastq_file, output_dir, assembly_function_list, estimated_size=options.estimated_size, read1_fasta=read1_fasta, name=name, force_merge=options.force_merge)
     logging.info("Elapsed time:%.1f seconds"%(time.time()-start_time))
 
 def _prepare_optparser():
