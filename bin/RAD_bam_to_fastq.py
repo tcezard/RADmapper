@@ -5,6 +5,7 @@ from IO_interface import samIterator
 from utils.GenomeLoader import GenomeLoader
 from utils import DNA_tools, utils_logging
 import os, pysam
+
 import logging, threading
 from optparse import OptionParser
 from overlap import merge_ranges
@@ -116,7 +117,6 @@ def load_from_sites_generator2(bam_file, options='', consensus=''):
             else:
                 all_unmatched_read2[align_read.qname]=align_read
     
-
 class File_factory():
     def __init__(self, max_nb_file=50):
         self.all_dir_paths={}
@@ -409,12 +409,6 @@ def main():
             command = 'python %s -g %s -w %s -o %s -b %s'%(sys.argv[0], options.read1_consensus_file, sub_whitelist, output_dir, ' '.join(bam_files))
             print command
             
-
-        #extract_reads_from_all_bam_files_all_consensus(bam_files=bam_files, all_read1_consensus_file=options.read1_consensus_file,
-        #                                               white_list_file=options.white_list_file,
-        #                                               nb_consensus_per_dir=options.nb_consensus_per_dir, 
-        #                                               number_of_process=options.number_of_process)
-    
 
 
 def _prepare_optparser():

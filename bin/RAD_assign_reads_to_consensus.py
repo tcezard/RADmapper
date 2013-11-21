@@ -86,7 +86,9 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
         logging.critical("You need to have the environment variable properly set to use that script")
         return False
 
+
     return_code=0
+
     files_and_dir=[]
     if fastq_file1.endswith('.gz'):
         fastq_file1_unzip,ext = os.path.splitext(fastq_file1)
@@ -116,7 +118,7 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
     if length_fastq1>100 and length_fasta>100:
         long_read=True
     else: long_read = False
-        
+
     #Get the sample name
     if not sample_name:
         if fastq_file2:
@@ -160,8 +162,6 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
     
     samtools_bin=os.path.join(samtools_dir,'samtools')
 
-
-
     #Starts processing
     if longer_reads:
         #Trim the long read
@@ -200,6 +200,7 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
             
         name_sorted_bam_file=os.path.join(output_dir, sample_name+'_sorted_name')
         command = "cat %s %s | %s view -bS - | %s sort -n - %s"%(read1_sam_file,read2_sam_file, samtools_bin, samtools_bin, name_sorted_bam_file)
+
         return_code = command_runner.run_command(command)
         if return_code is not 0:
             run_fine = False
@@ -212,6 +213,7 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
             command +="python %s -p | "%path_to_script
         else:
             command +="python %s | "%path_to_script
+
         command +="%s view -bS - | %s sort - %s"%(samtools_bin,  samtools_bin, sorted_bam_file)
         return_code = command_runner.run_command(command)
         if return_code is not 0:
@@ -425,6 +427,7 @@ def convert_untrimmed_read(fastq_file1_long, output_dir, rgid,libid,smid, picard
         run_fine = False
     files_and_dir.append(read1_long_sam)
     return read1_long_sam
+
 
 def remove_file(files_and_dir):
     return command_runner.run_command( 'rm -fr %s'%(' '.join(files_and_dir)))
