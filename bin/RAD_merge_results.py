@@ -20,10 +20,16 @@ from collections import Counter
 import multiprocessing
 
 
+#get the path to the current script to infer the path to RAD_set_read1_consensus_to_read2.py
+RADmapper_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+path_to_picard = os.path.join(RADmapper_dir,"picard")
+mergeSamFilesWithCat_jar=os.path.join(path_to_picard,'MergeSamFilesWithCat.jar')
+
 ##### Generic merging functions
 def merge_bam_files(list_of_file, output_file=None, **kwargs):
     """This is a generic merging function for bam files.
     It assumes that all the bam file comes from mapping to independent contigs"""
+
     if not output_file:
         #Create a generic name and put it in the current working directory
         working_directory=os.getcwd()
@@ -33,7 +39,7 @@ def merge_bam_files(list_of_file, output_file=None, **kwargs):
         while os.path.exists(output_file):
             i+=1
             output_file=output_file_template%i
-    command = 'java -jar -Xmx2G  ~/workspace/Picard/dist/MergeSamFilesWithCat.jar VALIDATION_STRINGENCY=SILENT CAT_SEQUENCE_DICTIONARIES=True USE_THREADING=True O=%s '%(output_file)
+    command = 'java -jar -Xmx2G %s VALIDATION_STRINGENCY=SILENT CAT_SEQUENCE_DICTIONARIES=True USE_THREADING=True O=%s '%(mergeSamFilesWithCat_jar,output_file)
     inputs=['I=%s'%file for file in list_of_file]
     command += ' '.join(inputs)
     return_code=command_runner.run_command(command)
