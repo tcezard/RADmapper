@@ -228,6 +228,7 @@ def get_best_assembly_merged(assembly_dir, read1_fasta, name, force_merge=False)
     for contig_file2 in contigs_file_to_compare:
         output_dir=os.path.dirname(contig_file2)
         merged_contig_file = merge_read1_and_read2_contigs(name, read1_fasta, contig_file2, output_dir)
+        print merged_contig_file
         if merged_contig_file:
             best_assembly=merged_contig_file
             name=os.path.basename(os.path.dirname(contig_file2))
@@ -236,14 +237,14 @@ def get_best_assembly_merged(assembly_dir, read1_fasta, name, force_merge=False)
     
     if best_assembly is None :
         name=os.path.basename(os.path.dirname(contigs_file_to_compare[0]))
-        best_assembly=os.path.join(assembly_dir,"merged_consensus.fa")
+        best_assembly=os.path.join(assembly_dir,name,"merged_consensus.fa")
         if force_merge:
             logging.info("Best assembly with %s: Force merge"%name)
             force_merge_consensus(read1_fasta, contigs_file_to_compare[0], best_assembly)
         else:
             logging.info("Best assembly with %s: Concatenated"%name)
             concatenate_consensus([read1_fasta, contigs_file_to_compare[0]], best_assembly)
-    return best_assembly
+    return name,best_assembly
 
 
 def compare_fasta_length(fasta_rec1,fasta_rec2):
@@ -258,7 +259,14 @@ def merge_read1_and_read2_contigs(name, read1_contig, read2_contigs, output_dir)
     for header, sequence in read2_reader:
         all_fasta2_entries.append((header,sequence))
     if len(all_fasta2_entries)==1:
-        return merge_2_contigs(name, read1_contig, read2_contigs, output_dir)
+        merged_contigs_info = merge_2_contigs(name, read1_contig, read2_contigs, output_dir)
+        if merged_contigs_info:
+            merged_contig_file=os.path.join(output_dir,'tmp_merged_consensus.fa')
+            with open(merged_contig_file,'w') as open_output:
+                open_output.write('>%s\n%s\n'%merged_contigs_info)
+            return merged_contig_file
+        else:
+            return None
     else:
         all_fasta2_entries.sort(cmp=compare_fasta_length)
         merged_pair = None
@@ -274,7 +282,7 @@ def merge_read1_and_read2_contigs(name, read1_contig, read2_contigs, output_dir)
                     remaining.append(cur_pair)
             else:
                 results = merge_2_contigs(name+"add", read1_contig, cur_pair, output_dir)
-                #TODO: fix this as it doesn't seems to trim and the output file is the same as above     but in the mean time disable
+                #TODO: fix this as it doesn't seems to trim and the output file is the same as above but in the mean time disable using False
                 if False and results:
                     additional_merged_pair=os.path.join(output_dir,'tmp_merged_consensus.fa')
                     with open(additional_merged_pair,'w') as open_output:
@@ -286,7 +294,10 @@ def merge_read1_and_read2_contigs(name, read1_contig, read2_contigs, output_dir)
             
         merge_file = os.path.join(output_dir,"merged_consensus.fa")
         if merged_pair:
-            tmp = [merged_pair]
+            merged_pair_file=os.path.join(output_dir,'tmp_merged_consensus.fa')
+            with open(merged_pair_file,'w') as open_output:
+                open_output.write('>%s\n%s\n'%merged_pair)
+            tmp = [merged_pair_file]
             tmp.extend(remaining)
             concatenate_consensus(tmp,merge_file)
             return merge_file
@@ -394,7 +405,7 @@ def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated
         #Merge read one and read2 contig
         if contig_file:
             #TODO: This function gets run twice need to change that as the second run is not useful
-            merge_read1_and_read2_contigs(name, read1_contig=read1_fasta, read2_contigs=contig_file)
+            merge_read1_and_read2_contigs(name, read1_contig=read1_fasta, read2_contigs=contig_file, output_dir=os.path.dirname(contig_file))
         
     best_assembler_name, best_assembly_file = get_best_assembly_merged(output_dir, read1_fasta, name, force_merge)
 
