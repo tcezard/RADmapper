@@ -153,9 +153,10 @@ def get_mpileup_from_bam(bam_file, options=''):
     if bam_file=='PIPE':
         bam_file='-'
     else:
-        command = '%s mpileup %s %s'%(samtools_bin, bam_file, options)
+        command = '%s mpileup -A %s %s'%(samtools_bin, bam_file, options)
     stream, process = utils_commands.get_output_stream_from_command(command, logger_name=None)
     return stream
+
 
 def allele_freq_from_bam_and_list_pos(output_file, input_file, list_position_file, all_positions_loaded, exclusion_id_file, bas_qual_threshold=20,
                                    map_qual_threshold=10, coverage_threshold=6):

@@ -12,6 +12,7 @@ import command_runner
 from utils.FastaFormat import FastaReader
 import time
 from RAD_merge_read1_and_read2 import merge_2_contigs
+from RAD_merge_results import merge_by_chunck, concatenate_file
 
 VELVETOPT_ALIAS=["velvetopt","velvetoptimiser"]
 VELVET_ALIAS=["velvet"]
@@ -222,8 +223,11 @@ def get_best_assembly(assembly_dir):
 
 def get_best_assembly_merged(assembly_dir, read1_fasta, name, force_merge=False):
     contigs_file_to_compare = glob(os.path.join(assembly_dir,"*/contigs_corrected.fa"))
+    if len(contigs_file_to_compare)==0:
+        return 'None', read1_fasta
+
     contigs_file_to_compare.sort(cmp=compare_contig_file)
-    
+
     best_assembly=None
     for contig_file2 in contigs_file_to_compare:
         output_dir=os.path.dirname(contig_file2)
@@ -332,8 +336,9 @@ def trim_additional_merged_contigs(original_contig, merged_contig):
     
 
 def concatenate_consensus(all_fasta_files,output_merge_file):
-    command = "cat %s > %s "%(' '.join(all_fasta_files), output_merge_file)
-    command_runner.run_command(command)
+    output_file = merge_by_chunck(all_fasta_files, concatenate_file, output_merge_file)
+    #command = "cat %s > %s "%(' '.join(all_fasta_files), output_merge_file)
+    #command_runner.run_command(command)
 
 #def concatenate_consensus(read1_consensus, read2_consensus, output_merge_file):
 #    open_output = open(output_merge_file,'w')

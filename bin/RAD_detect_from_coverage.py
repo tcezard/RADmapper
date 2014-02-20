@@ -73,7 +73,7 @@ def get_normalize_coverage(coverage_file, nb_sample_required=0):
 def detect_presence_absence_markers(pop_file , coverage_file, nb_sample_required=0):
     sample2pop, pop2sample = read_pop_file(pop_file)
     if len(pop2sample)!=2:
-        logging.critical('Hemizygous Markers can only be search between two set of samples. Edit your population file to have two populations')
+        logging.critical('Presence/Absence Markers can only be search between two set of samples. Edit your population file to have two populations')
         return -1
     pop1,pop2 = pop2sample.keys()
     samples_pop1 = pop2sample.get(pop1)
@@ -105,12 +105,20 @@ def detect_presence_absence_markers(pop_file , coverage_file, nb_sample_required
         pop2_nvalues = numpy.array(pop2_values)
         pop2_nvalues_2 = pop2_nvalues*2
         t_stat, pvalue =  stats.ttest_ind(pop1_nvalues,pop2_nvalues)
-        if pvalue<.05:
-            t_stat_comp1, pvalue_comp1 =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
-            if pvalue_comp1 >0.5:
-                fold=pop2_nvalues.mean()/pop1_nvalues.mean()
-                if fold < 2.2 and fold >1.8: 
-                    print ' '.join(out), fold, pop1_nvalues.mean(), pop2_nvalues.mean(), pvalue, pvalue_comp1
+        #if pvalue<.05:
+        #    t_stat_comp1, pvalue_comp1 =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
+        #    if pvalue_comp1 >0.5:
+        #        fold=pop2_nvalues.mean()/pop1_nvalues.mean()
+        #        if fold < 2.2 and fold >1.8:
+        #            print ' '.join(out), fold, pop1_nvalues.mean(), pop2_nvalues.mean(), pvalue, pvalue_comp1
+
+
+        out.append(str(pop1_nvalues.mean()))
+        out.append(str(pop1_nvalues.std()))
+        out.append(str(pop2_nvalues.mean()))
+        out.append(str(pop2_nvalues.std()))
+
+        print "%s\t%s\t%s"%("\t".join(out),"\t".join(out_pop1),"\t".join(out_pop2))
 
 def detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0):
     sample2pop, pop2sample = read_pop_file(pop_file)
@@ -120,10 +128,10 @@ def detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0):
     pop1,pop2 = pop2sample.keys()
     samples_pop1 = pop2sample.get(pop1)
     samples_pop2 = pop2sample.get(pop2)
-    
+
     all_markers, all_samples, all_samples_to_norm_coverage = get_normalize_coverage(coverage_file, nb_sample_required)
-    
-    sample_errors =  set(sample2pop.keys()).difference(set(all_samples)) 
+
+    sample_errors =  set(sample2pop.keys()).difference(set(all_samples))
     if len(sample_errors)>0:
         logging.critical('%s samples (%s) from the population file not found in the coverage file'%(len(sample_errors), ', '.join(sample_errors)))
         return -2
@@ -138,7 +146,7 @@ def detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0):
             cov = all_samples_to_norm_coverage.get(sample)[i]
             pop1_values.append(cov)
             out_pop1.append(str(cov))
-        
+
         for sample in samples_pop2:
             cov = all_samples_to_norm_coverage.get(sample)[i]
             pop2_values.append(cov)
@@ -148,19 +156,19 @@ def detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0):
         pop2_nvalues = numpy.array(pop2_values)
         pop2_nvalues_2 = pop2_nvalues*2
         t_stat, pvalue =  stats.ttest_ind(pop1_nvalues,pop2_nvalues)
-        if pvalue<.05:
-            t_stat_comp1, pvalue_comp1 =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
-            if pvalue_comp1 >0.5:
-                fold=pop2_nvalues.mean()/pop1_nvalues.mean()
-                if fold < 2.2 and fold >1.8: 
-                    print ' '.join(out), fold, pop1_nvalues.mean(), pop2_nvalues.mean(), pvalue, pvalue_comp1
-        
-        #out.append(str(male_values.get_mean()))
-        #out.append(str(male_values.get_std_dev()))
-        #out.append(str(female_values.get_mean()))
-        #out.append(str(female_values.get_std_dev()))
-        
-        #print "%s\t%s\t%s"%("\t".join(out),"\t".join(out_male),"\t".join(out_female)) 
+        #if pvalue<.05:
+        #    t_stat_comp1, pvalue_comp1 =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
+        #    if pvalue_comp1 >0.5:
+        #        fold=pop2_nvalues.mean()/pop1_nvalues.mean()
+        #        if fold < 2.2 and fold >1.8:
+        #            print ' '.join(out), fold, pop1_nvalues.mean(), pop2_nvalues.mean(), pvalue, pvalue_comp1
+
+        out.append(str(male_values.get_mean()))
+        out.append(str(male_values.get_std_dev()))
+        out.append(str(female_values.get_mean()))
+        out.append(str(female_values.get_std_dev()))
+
+        print "%s\t%s\t%s"%("\t".join(out),"\t".join(out_male),"\t".join(out_female))
 
 def main():
     #initialize the logging

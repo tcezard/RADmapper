@@ -13,8 +13,8 @@ import command_runner
 from utils.FastaFormat import FastaReader
 import time
 from RAD_merge_read1_and_read2 import merge_2_contigs
+from RAD_merge_bam_files import merge_bam_files
 from utils.parameters import Config_file_error
-from RAD_assemble_read2 import run_all_fastq_files
 from utils.utils_commands import get_output_stream_from_command
 from collections import Counter
 import multiprocessing
@@ -26,7 +26,7 @@ path_to_picard = os.path.join(RADmapper_dir,"picard")
 mergeSamFilesWithCat_jar=os.path.join(path_to_picard,'MergeSamFilesWithCat.jar')
 
 ##### Generic merging functions
-def merge_bam_files(list_of_file, output_file=None, **kwargs):
+def merge_bam_files_with_picard(list_of_file, output_file=None, **kwargs):
     """This is a generic merging function for bam files.
     It assumes that all the bam file comes from mapping to independent contigs"""
 
@@ -64,7 +64,7 @@ def concatenate_file(list_of_file,output_file=None, **kwargs):
 
     if kwargs.has_key('filter'):
         filter_on = kwargs.get('filter')
-        command = 'cat %s | egrep %s > %s '%(' '.join(list_of_file), filter_on, output_file)
+        command = 'cat %s | egrep -v %s > %s '%(' '.join(list_of_file), filter_on, output_file)
     else:
         command = 'cat %s > %s '%(' '.join(list_of_file), output_file)
     return_code=command_runner.run_command(command)
@@ -101,7 +101,7 @@ def merge_all_bam_files_from_directory(directory):
     directory=os.path.abspath(directory)
     all_bam_files = glob(os.path.join(directory,'*_dir','*_corrected_sorted_mrk_dup_fixed.bam'))
     output_file = os.path.join(directory,'%s_files.bam'%len(all_bam_files))
-    output_file = merge_bam_files(all_bam_files, output_file)
+    output_file = merge_bam_files_with_picard(all_bam_files, output_file)
     if not output_file:
         logging.error("Merging bam files in %s failed"%(directory))
         #TODO do something about it
@@ -145,18 +145,26 @@ def merge_all_bam_files_from_directories(directory):
     """This function will merge the bam files across all the directories"""
     directory=os.path.abspath(directory)
     all_bam_files = glob(os.path.join(directory,'*_dir','*_files.bam'))
+    #Need to sort as glob retuns the file in random order
+    all_bam_files.sort()
     output_file = os.path.join(directory,'all_consensus_merged.bam')
-    output_file = merge_by_chunck(all_bam_files, merge_bam_files, output_file)
+    merge_bam_files(all_bam_files,output_file)
+
+    #output_file = merge_by_chunck(all_bam_files, merge_bam_files_with_picard, output_file)
     if output_file:
         return 0
 
 def merge_all_contigs_files_from_directories(directory):
     """This function will merge the contigs files across all the directories"""
     all_fasta_files = glob(os.path.join(directory,'*_dir','*_best_assembly.fa'))
+    #Need to sort as glob retuns the file in random order
+    all_fasta_files.sort()
+
     output_file = os.path.join(directory,'all_consensus_assembly.fa')
     output_file = merge_by_chunck(all_fasta_files, concatenate_file, output_file)
     if output_file:
         return 0
+
 
 def merge_all_snps_files_from_directories(directory):
     """This function will merge the snps files across all the directories"""
@@ -211,13 +219,14 @@ def merge_results(directory):
 
 def merge_all_results(directory):
     return_code=0
-    return_code = merge_all_bam_files_from_directories(directory)
     if return_code==0:
         return_code = merge_all_contigs_files_from_directories(directory)
     if return_code==0:
         return_code = merge_all_snps_files_from_directories(directory)
     if return_code==0:
         return_code = merge_all_summary_files_from_directories(directory)
+    #if return_code==0:
+    #    return_code = merge_all_bam_files_from_directories(directory)
     return return_code
 
 def main():

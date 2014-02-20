@@ -310,8 +310,9 @@ def align_short_reads_se(fastq_file1,  genome_file, output_dir, sample_name, thr
     files_and_dir.append(sai_file1)
     
     #only one end so just run get the sorted bam file
-    bam_file=os.path.join(output_dir, sample_name)
-    command="""%s samse %s %s %s %s | %s view -bS - > %s"""%(BWA_bin, read_group_command, genome_file, sai_file1, fastq_file1, samtools_bin, bam_file )
+    bam_file=os.path.join(output_dir, sample_name+"_sorted")
+    command="""%s samse %s %s %s %s | %s view -bS - | %s sort - %s"""%(BWA_bin, read_group_command, genome_file, sai_file1,
+                                                                         fastq_file1, samtools_bin, samtools_bin, bam_file )
     return_code = command_runner.run_command( command)
     if return_code is not 0:
         run_fine = False 

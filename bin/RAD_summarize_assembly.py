@@ -69,14 +69,16 @@ def print_output_dict(output_dict, header_order):
 
 def count_reads_in_fastq(fastq_file):
     command = '''awk '{if (NR%%4==1){split($1,array,"RGID:"); print array[2]}}' %s| uniq -c'''%(fastq_file)
+    logging.info(command)
     stream, process = get_output_stream_from_command(command)
     total=0
     all_read_groups=Counter()
     for line in stream:
-        count, rgid = line.strip().split()
-        count=int(count)
-        total+=count
-        all_read_groups[rgid]
+        if len(line.strip().split())==2
+            count, rgid = line.strip().split()
+            count=int(count)
+            total+=count
+            all_read_groups[rgid]
     return total, all_read_groups
 
         
