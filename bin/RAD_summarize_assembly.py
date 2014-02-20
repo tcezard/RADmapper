@@ -74,7 +74,7 @@ def count_reads_in_fastq(fastq_file):
     total=0
     all_read_groups=Counter()
     for line in stream:
-        if len(line.strip().split())==2
+        if len(line.strip().split())==2:
             count, rgid = line.strip().split()
             count=int(count)
             total+=count
