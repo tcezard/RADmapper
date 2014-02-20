@@ -225,8 +225,8 @@ def merge_all_results(directory):
         return_code = merge_all_snps_files_from_directories(directory)
     if return_code==0:
         return_code = merge_all_summary_files_from_directories(directory)
-    #if return_code==0:
-    #    return_code = merge_all_bam_files_from_directories(directory)
+    if return_code==0:
+        return_code = merge_all_bam_files_from_directories(directory)
     return return_code
 
 def main():
