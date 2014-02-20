@@ -1,0 +1,5 @@
+#Pycharm files
+.idea
+
+#Precompile python files
+*.pyc
