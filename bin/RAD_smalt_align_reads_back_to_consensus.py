@@ -183,6 +183,8 @@ samtools view -Sb - > %s""".replace("\n"," ")
 def SNP_call_with_samtools(samtools_dir, name, bam_file, ref_file):
     samtools_bin=os.path.join(samtools_dir,"samtools")
     bcftools_bin=os.path.join(samtools_dir,"bcftools/bcftools")
+    if not os.path.exists(bcftools_bin):
+        bcftools_bin=os.path.join(samtools_dir,"bcftools")
     samtools_raw_vcf=os.path.join(name+'_sorted_mrk_dup_fixed_samtools.vcf')
     command="%s mpileup -d 2000 -ADESuf %s %s | %s view -gv - > %s"
     command=command%(samtools_bin, ref_file, bam_file, bcftools_bin, samtools_raw_vcf)    
