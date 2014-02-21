@@ -141,7 +141,7 @@ def _get_open_fastq_files(fastq_file):
     open_fastq_files[fastq_file]=open_file
     return open_file
 
-def close_fastq_files()
+def close_fastq_files():
     for filename in open_fastq_files:
         open_fastq_files.pop(filename).close()
 
@@ -218,6 +218,7 @@ def extract_reads_from_all_bam_files_set_of_consensus(bam_files, list_consensus,
         genome_loader = GenomeLoader(all_read1_consensus_file,keep_until_done=True)
     for bam_file in bam_files:
         extract_reads_from_one_bam_file(bam_file, output_dir, list_consensus, genome_loader)
+    #All the read have been extract now close the fastq files
     close_fastq_files()
 
 
