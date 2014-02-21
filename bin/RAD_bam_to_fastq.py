@@ -141,9 +141,12 @@ def _get_open_fastq_files(fastq_file):
     open_fastq_files[fastq_file]=open_file
     return open_file
 
+def close_fastq_files()
+    for filename in open_fastq_files:
+        open_fastq_files.pop(filename).close()
+
 def extract_reads_from_one_bam_file(bam_file, output_dir, list_consensus, genome_loader):
     for consensus_name in list_consensus:
-        logging.info("Extract reads from %s "%consensus_name)
         consensus_name, consensus_sequence = genome_loader.get_chr(consensus_name)
         all_first_reads_for_consensus, all_second_reads_for_consensus = process_one_bam_file_one_consensus(bam_file, consensus_name)
         consensus_directory = os.path.join(output_dir, consensus_name+'_dir')
@@ -215,6 +218,7 @@ def extract_reads_from_all_bam_files_set_of_consensus(bam_files, list_consensus,
         genome_loader = GenomeLoader(all_read1_consensus_file,keep_until_done=True)
     for bam_file in bam_files:
         extract_reads_from_one_bam_file(bam_file, output_dir, list_consensus, genome_loader)
+    close_fastq_files()
 
 
 def aligned_read_to_fastq(aligned_read, rgid=None):
