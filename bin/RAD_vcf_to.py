@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 '''
 Created on Mar 9, 2011
 
@@ -48,7 +49,7 @@ def vcf_to_phylip(vcf_file, output_file, pop_file=None, genotype_quality_thresho
         all_samples_in_file=sample2pop.keys()
     
     max_missing =int( len(all_samples_in_file) * max_prop_missing)
-    
+
     all_lines={}
     for sample in all_samples_in_file:
         all_lines[sample]=[]
