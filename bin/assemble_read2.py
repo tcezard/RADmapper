@@ -29,7 +29,8 @@ def get_readgroup_from_bam(bam_files):
     return all_read_groups
 
 
-def extract_and_assemble(bam_files, genome_file, white_list_file, output_dir, assembly_function_list,force_merge=False):
+def extract_and_assemble(bam_files, genome_file, white_list_file, output_dir, assembly_function_list,
+                         subsample_nb_read=None, adapter_file=None, force_merge=False):
     logging.info('processing %s'%output_dir)
     logging.info("--------------------------")
     logging.info("Extract the reads from bam")
@@ -40,7 +41,8 @@ def extract_and_assemble(bam_files, genome_file, white_list_file, output_dir, as
     logging.info("--------------")
     logging.info("Assemble read2")
     logging.info("--------------")
-    RAD_assemble_read2.run_all_fastq_files(output_dir, assembly_function_list, 600, force_merge=force_merge)
+    RAD_assemble_read2.run_all_fastq_files(output_dir, assembly_function_list, 600, force_merge=force_merge,
+                                           subsample_nb_read=subsample_nb_read, adapter_file=adapter_file)
     logging.info("----------------------------")
     logging.info("Extract read groups from bam")
     logging.info("----------------------------")
@@ -86,7 +88,9 @@ def main():
         assembly_function=RAD_assemble_read2.get_assembly_function(assembler_name)
         assembly_function_list.append(assembly_function)
     command_runner.set_command_to_run_localy()
-    extract_and_assemble(bam_files, options.read1_consensus_file, options.white_list_file, options.output_dir, assembly_function_list)
+    extract_and_assemble(bam_files, options.read1_consensus_file, options.white_list_file, options.output_dir,
+                         assembly_function_list,
+                         subsample_nb_read=options.subsample_nb_read, adapter_file=options.adapter_file)
 
 def _prepare_optparser():
     """Prepare optparser object. New options will be added in this
@@ -107,6 +111,11 @@ def _prepare_optparser():
                          help="The file containing the name of the consensus to assemble")
     optparser.add_option("-o","--output_dir",dest="output_dir",type="string",
                          help="This act as a flag to bypass the nb_consensus_per_dir. This means that all consensus in the whitelist will be extracted in the output_dir.")
+    optparser.add_option("-S", "--subsample_nb_read", dest="subsample_nb_read", type="int", default=0,
+                         help="sub sample to the specified number of read before assembly. Default: %default")
+    optparser.add_option("-A", "--adapter_file", dest="adapter_file", type="string",
+                         default="/ifs/seqarchive/adapters/adapters_19122011_and_trueseq_universal_adapter.fasta",
+                         help="Specify an adapter file to trim before running the assembly. Default: %default")
     optparser.add_option("--force_merge",dest="force_merge",action='store_true',default=False,
                          help="Force merged the consensus: add a run of 100 N in between each sequence. Default: %default")
     optparser.add_option("--print",dest="print_command",action='store_true',default=False,
