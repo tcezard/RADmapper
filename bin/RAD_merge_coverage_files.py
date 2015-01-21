@@ -4,30 +4,25 @@
 Created on 31 Oct 2013
 @author: tcezard
 '''
-import sys, os
-from utils import utils_logging, utils_commands, longest_common_substr_from_start, utils_param, sort_bam_file_per_coordinate
-import logging, threading, re
+import sys
+import os
+import logging
 from optparse import OptionParser
-from glob import glob
-import command_runner
-from utils.FastaFormat import FastaReader
-import time
-from RAD_merge_read1_and_read2 import merge_2_contigs
-from utils.parameters import Config_file_error
-from RAD_assemble_read2 import run_all_fastq_files
-from utils.utils_commands import get_output_stream_from_command
 from collections import Counter
-import multiprocessing
-from collections import Counter
+
+from utils import utils_logging
+
 
 header_to_record=["length","known_novel"]
-header_to_ignore=["#locus", "#contig", "coverage","coverage_mrk_dup", "nb_sample"]
+header_to_ignore = ["#locus", "#contig", "coverage", "coverage_mrk_dup", "nb_allele", "nb_sample"]
 
-def parse_coverage_file(coverage_file, all_loci_per_sample={"all_sample":Counter()}, all_loci_mrk_dup_per_sample={"all_sample":Counter()},
-                        all_loci_characteristic={}, all_loci=set(), all_samples=set(), all_characteristics=set()):
+
+def parse_coverage_file(coverage_file, all_loci_per_sample={"all_sample": Counter()},
+                        all_loci_mrk_dup_per_sample={"all_sample": Counter()},
+                        all_loci_characteristic={}, all_loci=set(), all_samples=set(),
+                        all_characteristics=set()):
     samples_index={}
     characteristic_index={}
-
     with open(coverage_file) as open_file:
         for line in open_file:
             if line.startswith('#'):
@@ -35,7 +30,6 @@ def parse_coverage_file(coverage_file, all_loci_per_sample={"all_sample":Counter
                 for i, element in enumerate(sp_line):
                     if element in header_to_ignore:
                         continue
-
                     if element in header_to_record:
                         characteristic_index[i]=element
                         all_loci_characteristic[element]={}
@@ -48,7 +42,6 @@ def parse_coverage_file(coverage_file, all_loci_per_sample={"all_sample":Counter
                         elif not all_loci_per_sample.has_key(element):
                             all_loci_per_sample[element]=Counter()
                             all_samples.add(element)
-
             else:
                 sp_line = line.strip().split('\t')
                 all_loci.add(sp_line[0])
@@ -63,7 +56,7 @@ def parse_coverage_file(coverage_file, all_loci_per_sample={"all_sample":Counter
                             all_loci_per_sample["all_sample"][sp_line[0]]+=int(sp_line[i])
                     elif i in characteristic_index:
                         all_loci_characteristic[characteristic_index.get(i)][sp_line[0]]=sp_line[i]
-    return  (all_loci_per_sample, all_loci_mrk_dup_per_sample, all_loci_characteristic,
+    return (all_loci_per_sample, all_loci_mrk_dup_per_sample, all_loci_characteristic,
              all_loci, all_samples, all_characteristics)
 
 

@@ -7,6 +7,7 @@ Created on 29 August 2013
 import sys
 from optparse import OptionParser
 
+
 def generate_ustack_command(fastq_file, output_dir, min_depth, max_dist_1, max_dist_2, counter):
     """ustacks -t file_type -f file_path [-d] [-r] [-o path] [-i id] [-e errfreq] [-m min_cov] [-M max_dist] [-p num_threads] [-R] [-H] [-h]
   p: enable parallel execution with num_threads threads.
@@ -24,30 +25,34 @@ def generate_ustack_command(fastq_file, output_dir, min_depth, max_dist_1, max_d
   H: disable calling haplotypes from secondary reads.
   h: display this help messsage.
 """
-    ustacks_bin='ustacks'
-    command = "%s -t fastq -p 2 -m %s -M %s -N %s -H -o %s -f %s -i %s"%(ustacks_bin, min_depth, max_dist_1, max_dist_2, output_dir, fastq_file, counter)
+    ustacks_bin = 'ustacks'
+    command = "%s -t fastq -p 2 -m %s -M %s -N %s -H -o %s -f %s -i %s" % (
+    ustacks_bin, min_depth, max_dist_1, max_dist_2, output_dir, fastq_file, counter)
     return command
+
+
 def run_on_cluster(commands):
     pass
 
+
 def cluster_read1_one_sample(fastq_file):
     command = generate_ustack_command(fastq_file)
-    
+
+
 def cluster_read1_accross_all_samples(fastq_files):
     for fastq_file in fastq_files:
         cluster_read1_one_sample(fastq_file)
-        
 
 
 def main():
-    #initialize the logging
+    # initialize the logging
     utils_logging.init_logging(logging.INFO)
     #utils_logging.init_logging(logging.CRITICAL)
     #Setup options
-    optparser=_prepare_optparser()
-    (options,args) = optparser.parse_args()
+    optparser = _prepare_optparser()
+    (options, args) = optparser.parse_args()
     #verify options
-    arg_pass=_verifyOption(options)
+    arg_pass = _verifyOption(options)
     if not arg_pass:
         logging.warning(optparser.get_usage())
         logging.critical("Non valid arguments: exit")
@@ -57,21 +62,22 @@ def main():
     if not options.print_command:
         command_runner.set_command_to_run_localy()
     run_all_fastq_files(options.consensus_dir)
-    
+
+
 def _prepare_optparser():
     """Prepare optparser object. New options will be added in this
     function first.
     """
     usage = """usage: %prog <-b bam_file> [ -o output_file]"""
     description = """This script will take aligned RAD read to the consensuses and calculate per consensus coverage."""
-    
-    optparser = OptionParser(version="None",description=description,usage=usage,add_help_option=False)
-    optparser.add_option("-h","--help",action="help",help="show this help message and exit.")
-    optparser.add_option("-d","--consensus_dir",dest="consensus_dir",type="string",
+
+    optparser = OptionParser(version="None", description=description, usage=usage, add_help_option=False)
+    optparser.add_option("-h", "--help", action="help", help="show this help message and exit.")
+    optparser.add_option("-d", "--consensus_dir", dest="consensus_dir", type="string",
                          help="Path to a directory containing fastq file (only extension .fastq will be processed). Default: %default")
-    optparser.add_option("--print",dest="print_command",action='store_true',default=False,
+    optparser.add_option("--print", dest="print_command", action='store_true', default=False,
                          help="print the commands instead of running them. Default: %default")
-    optparser.add_option("--debug",dest="debug",action='store_true',default=False,
+    optparser.add_option("--debug", dest="debug", action='store_true', default=False,
                          help="Output debug statment. Default: %default")
     return optparser
 
@@ -79,11 +85,10 @@ def _prepare_optparser():
 def _verifyOption(options):
     """Check if the mandatory option are present in the options objects.
     @return False if any argument is wrong."""
-    arg_pass=True
-    
+    arg_pass = True
+
     return arg_pass
 
 
-
-if __name__=="__main__":
+if __name__ == "__main__":
     main()

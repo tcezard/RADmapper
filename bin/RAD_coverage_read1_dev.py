@@ -4,14 +4,18 @@
 Created on 20 October 2011
 @author: tcezard
 '''
-import sys, os
-from utils import  utils_param, utils_logging
-import logging, threading
-from utils.parameters import Config_file_error
+import sys
+import os
+import logging
+import threading
 from optparse import OptionParser
+from collections import Counter, defaultdict
+
+from utils import utils_param, utils_logging
+from utils.parameters import Config_file_error
 from utils.utils_commands import get_output_stream_from_command
 from IO_interface.samIterator import Sam_record
-from collections import Counter
+
 
 class FuncThread(threading.Thread):
     def __init__(self, target, *args, **kwargs):
@@ -33,33 +37,42 @@ class AllContigsInfo():
         self.per_loci_info={}
         self.sample_list=set()
         self.lock = threading.RLock()
-        
-    def add_values(self,contig, position, coverage, duplicate, sample=None):
+
+    def add_values(self, contig, position, coverage, duplicate, alleles=None, sample=None):
         with self.lock:
-            loci='%s\t%s'%(contig,position)
+            if position:
+                loci = '%s:%s' % (contig, position)
+            else:
+                loci = '%s' % (contig)
             info = self.per_loci_info.get(loci)
             if not info:
-                info={'coverage':0, 'coverage_mrk_dup':0}
+                info = {'coverage': 0, 'coverage_mrk_dup': 0, "alleles": Counter()}
                 self.per_loci_info[loci]=info
             info['coverage']+=coverage
             info['coverage_mrk_dup']+=coverage-duplicate
+            if alleles:
+                for allele in alleles:
+                    info['alleles'][allele] += alleles.get(allele)
             if sample:
                 self.sample_list.add(sample)
-                if info.has_key(sample):
-                    info[sample]['coverage']+=coverage
-                    info[sample]['coverage_mrk_dup']+=coverage-duplicate
-                else:
-                    info[sample]={'coverage':coverage, 'coverage_mrk_dup':coverage-duplicate}
-            
+                if not info.has_key(sample):
+                    info[sample] = {'coverage': 0, 'coverage_mrk_dup': 0, 'alleles': Counter()}
+                info[sample]['coverage'] += coverage
+                info[sample]['coverage_mrk_dup'] += coverage - duplicate
+                if alleles:
+                    for allele in alleles:
+                        info[sample]['alleles'][allele] += alleles.get(allele)
+
+
     def get_all_loci(self):
-        return [tmp.split("\t") for tmp in self.per_loci_info.keys()]
+        return self.per_loci_info.keys()
     
     def get_all_samples(self):
         return list(self.sample_list)
-    
-        
-    def get_loci_coverage_value(self, contig, position, sample=None):
-        loci='%s\t%s'%(contig, position)
+
+
+    def get_loci_coverage_value(self, loci, sample=None):
+        # loci='%s\t%s'%(contig, position)
         info = self.per_loci_info.get(loci)
         if info:
             if sample:
@@ -68,9 +81,9 @@ class AllContigsInfo():
                     return tmp.get('coverage')
             else:
                 return info.get('coverage')
-            
-    def get_locus_coverage_mrk_dup_value(self, contig, position, sample=None):
-        loci='%s\t%s'%(contig, position)
+
+    def get_locus_coverage_mrk_dup_value(self, loci, sample=None):
+        #loci='%s\t%s'%(contig, position)
         info = self.per_loci_info.get(loci)
         if info:
             if sample:
@@ -79,6 +92,18 @@ class AllContigsInfo():
                     return tmp.get('coverage_mrk_dup')
             else:
                 return info.get('coverage_mrk_dup')
+
+    def get_nb_alleles(self, loci, sample=None):
+        info = self.per_loci_info.get(loci)
+        alleles = None
+        if info:
+            if sample:
+                tmp = info.get(sample)
+                if tmp:
+                    alleles = tmp.get('alleles')
+            else:
+                alleles = info.get('alleles')
+        return detect_alleles(alleles)
 
     def is_known_length(self, locus):
         return False
@@ -91,25 +116,30 @@ class AllSitesInfo():
         self.lock = threading.RLock()
         if known_sites:
             for site in known_sites:
-                self.add_values(site,coverage=0,duplicate=0,known_length=known_sites.get(site))
+                self.add_values(site, coverage=0, duplicate=0, known_length=known_sites.get(site))
 
-    def add_values(self,loci, coverage, duplicate, sample=None,known_length=False):
+    def add_values(self, loci, coverage, duplicate, alleles=None, sample=None, known_length=False):
         with self.lock:
             info = self.per_loci_info.get(loci)
             if not info:
-                info={'coverage':0, 'coverage_mrk_dup':0}
+                info = {'coverage': 0, 'coverage_mrk_dup': 0, 'alleles': {}}
                 self.per_loci_info[loci]=info
             info['coverage']+=coverage
             info['coverage_mrk_dup']+=coverage-duplicate
+            if alleles:
+                for allele in alleles:
+                    info['alleles'] += allele
             if known_length:
                 info['known_length']=known_length
             if sample:
                 self.sample_list.add(sample)
-                if info.has_key(sample):
-                    info[sample]['coverage']+=coverage
-                    info[sample]['coverage_mrk_dup']+=coverage-duplicate
-                else:
-                    info[sample]={'coverage':coverage, 'coverage_mrk_dup':coverage-duplicate}
+                if not info.has_key(sample):
+                    info[sample] = {'coverage': 0, 'coverage_mrk_dup': 0, 'alleles': {}}
+                info[sample]['coverage'] += coverage
+                info[sample]['coverage_mrk_dup'] += coverage - duplicate
+                if alleles:
+                    for allele in alleles:
+                        info['alleles'] += allele
 
 
     def get_all_loci(self):
@@ -138,9 +168,33 @@ class AllSitesInfo():
                     return tmp.get('coverage_mrk_dup')
             else:
                 return info.get('coverage_mrk_dup')
+
+    def get_nb_alleles(self, loci, sample=None):
+        info = self.per_loci_info.get(loci)
+        alleles = None
+        if info:
+            if sample:
+                tmp = info.get(sample)
+                if tmp:
+                    alleles = tmp.get('alleles')
+            else:
+                alleles = info.get('alleles')
+        return detect_alleles(alleles)
+
+
     def is_known_length(self, loci):
         info = self.per_loci_info.get(loci)
         return info.get("known_length", None)
+
+
+def detect_alleles(alleles):
+    nb_allele = 0
+    if alleles:
+        for allele in alleles:
+            if alleles.get(allele) > 10:
+                nb_allele += 1
+    return nb_allele
+
 
 def process_single_samtools_run(bam_file, all_contigs_info, samtools_bin):
     command="%s view -F 132 %s"%(samtools_bin, bam_file)
@@ -152,7 +206,7 @@ def process_single_samtools_run(bam_file, all_contigs_info, samtools_bin):
     for line in open_stream:
         sp_line=line.strip().split()
         if current_contig!=sp_line[2] and current_contig != None:
-            all_contigs_info.add_values(current_contig,coverage,duplicate,sample = sample_name)
+            all_contigs_info.add_values(current_contig, coverage, duplicate, sample=sample_name)
             coverage=0
             duplicate=0
         current_contig=sp_line[2]
@@ -192,19 +246,23 @@ def process_single_samtools_run_with_read_group(bam_file,all_contigs_info,samtoo
                     else:
                         read_groups[rg_id]=rg_id
         all_sample_coverage={}
+        all_sample_coverage_reads = {}
         all_sample_duplicate={}
         for sample in read_groups.values():
             all_sample_coverage[sample]=Counter()
             all_sample_duplicate[sample]=Counter()
+            all_sample_coverage_reads[sample] = defaultdict(Counter)
         #process the first read
         sam_record = Sam_record(line.strip())
         current_contig = sam_record.get_reference_name()
         if not sam_record.is_unmapped():
             rg_id = sam_record.get_tag("RG")
+            read_sequence = sam_record.get_query_sequence()
             loci = get_loci_from_read(sam_record)
             if sam_record.is_duplicate_read():
                 all_sample_duplicate[read_groups.get(rg_id)][str(loci)]+=1
             all_sample_coverage[read_groups.get(rg_id)][str(loci)]+=1
+            all_sample_coverage_reads[read_groups.get(rg_id)][str(loci)][read_sequence] +=1
         i=1
         #process all the others
         for line in open_stream:
@@ -215,25 +273,34 @@ def process_single_samtools_run_with_read_group(bam_file,all_contigs_info,samtoo
             if current_contig != sam_record.get_reference_name() and current_contig != None:
                 for sample in read_groups.values():
                     for loci in all_sample_coverage.get(sample):
+                        alleles = all_sample_coverage_reads[sample].get(loci)
                         all_contigs_info.add_values(current_contig, loci, all_sample_coverage.get(sample).get(loci, 0),
-                                                    all_sample_duplicate.get(sample).get(loci,0), sample = sample)
+                                                    all_sample_duplicate.get(sample).get(loci, 0), alleles=alleles,
+                                                    sample=sample)
+
                     all_sample_coverage[sample]=Counter()
                     all_sample_duplicate[sample]=Counter()
+                    all_sample_coverage_reads[sample] = defaultdict(Counter)
             current_contig = sam_record.get_reference_name()
             
             if not sam_record.is_unmapped():
                 rg_id = sam_record.get_tag("RG")
                 loci = get_loci_from_read(sam_record)
+                read_sequence = sam_record.get_query_sequence()
                 if sam_record.is_duplicate_read():
                     all_sample_duplicate[read_groups.get(rg_id)][str(loci)]+=1
                 all_sample_coverage[read_groups.get(rg_id)][str(loci)]+=1
+                all_sample_coverage_reads[read_groups.get(rg_id)][str(loci)][read_sequence] +=1
         if current_contig != None:
             for sample in read_groups.values():
                 for loci in all_sample_coverage.get(sample):
+                    alleles = all_sample_coverage_reads[sample].get(loci)
                     all_contigs_info.add_values(current_contig, loci, all_sample_coverage.get(sample).get(loci, 0),
-                                                all_sample_duplicate.get(sample).get(loci,0), sample = sample)
+                                                all_sample_duplicate.get(sample).get(loci, 0), alleles=alleles,
+                                                sample=sample)
                 all_sample_coverage[sample]=Counter()
                 all_sample_duplicate[sample]=Counter()
+                all_sample_coverage_reads[sample] = defaultdict(Counter)
     finally:
         open_stream.close()
 
@@ -406,19 +473,21 @@ def RAD_median_coverage(bam_files,output_file, with_rg=False, dd_rad=False, rest
     sample_names.sort()
     open_output=utils_logging.open_output_file(output_file)
     if restriction_file:
-        open_output.write("#locus\tcoverage\tcoverage_mrk_dup\tlength\tknown_novel\tnb_sample")
+        open_output.write("#locus\tcoverage\tcoverage_mrk_dup\tnb_allele\tlength\tknown_novel\tnb_sample")
     else:
-        open_output.write("#locus\tcoverage\tcoverage_mrk_dup\tnb_sample")
+        open_output.write("#locus\tcoverage\tcoverage_mrk_dup\tnb_allele\tnb_sample")
     for sample in sample_names:
-        open_output.write("\t%s\t%s_mrk_dup"%(sample,sample))
+        open_output.write("\t%s\t%s_mrk_dup\t%s_nb_allele" % (sample, sample, sample))
     open_output.write("\n")
     for locus in all_loci:
         out=[locus]
         nb_sample=0
         coverage=all_contigs_info.get_loci_coverage_value(locus)
         coverage_mrk_dup=all_contigs_info.get_locus_coverage_mrk_dup_value(locus)
+        nb_allele = all_contigs_info.get_nb_alleles(locus)
         out.append("%s"%(coverage))
         out.append("%s"%(coverage_mrk_dup))
+        out.append("%s" % (nb_allele))
         if restriction_file:
             length = all_contigs_info.is_known_length(locus)
             if length:
@@ -437,11 +506,14 @@ def RAD_median_coverage(bam_files,output_file, with_rg=False, dd_rad=False, rest
         for sample in sample_names:
             coverage = all_contigs_info.get_loci_coverage_value(locus, sample)
             coverage_mrk_dup=all_contigs_info.get_locus_coverage_mrk_dup_value(locus, sample)
+            nb_allele = all_contigs_info.get_nb_alleles(locus, sample)
             if not coverage:
                 coverage=0
             if not coverage_mrk_dup:
                 coverage_mrk_dup=0
-            out.append("%s\t%s"%(coverage,coverage_mrk_dup))
+            if not nb_allele:
+                nb_allele = 0
+            out.append("%s\t%s\t%s" % (coverage, coverage_mrk_dup, nb_allele))
             
         open_output.write("%s\n"%('\t'.join(out)))
         

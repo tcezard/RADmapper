@@ -4,22 +4,21 @@
 Created on 19 March  2012
 @author: tcezard
 '''
-import sys, os
+import sys
+import os
 import copy
-from utils import utils_logging, utils_commands,\
-    longest_common_substr_from_start, utils_param, sort_bam_file_per_coordinate
-import logging, threading, re
+import logging
 from optparse import OptionParser
 from glob import glob
+from collections import Counter
+
+from utils import utils_logging, utils_param
 import command_runner
 from utils.FastaFormat import FastaReader
-import time
-from RAD_merge_read1_and_read2 import merge_2_contigs
 from utils.parameters import Config_file_error
-from RAD_assemble_read2 import run_all_fastq_files
 from utils.utils_commands import get_output_stream_from_command
 from RAD_coverage_read1 import RAD_median_coverage
-from collections import Counter
+
 
 INVARIABLE_HEADERS=['name',"nb_contigs","max_contig_length","merge_status","nb_reads","nb_reads_mapped",
                     "nb_reads_duplicates","nb_SNPs"]
@@ -167,18 +166,22 @@ def get_coverage_from_bam(bam_file):
     coverage_info=RAD_median_coverage([bam_file],output_file, with_rg=True)
     all_contigs = coverage_info.get_all_contigs()
     if len(all_contigs)!=1:
-        logging.error("can't calculate coverage for %s --> %s read1 contigs found"%(bam_file, len(all_contigs)))
-        return None
-    contig=all_contigs[0]
+        logging.warning("calculate coverage for %s --> %s read1 contigs found" % (bam_file, len(all_contigs)))
 
-    sample_names=coverage_info.get_all_samples()
-    coverage_info_to_return={}
-    for sample in sample_names:
-        coverage = coverage_info.get_contig_coverage_value(contig,sample)
-        coverage_mrk_dup=coverage_info.get_contig_coverage_mrk_dup_value(contig,sample)
-        coverage_info_to_return[sample]=str(coverage)
-        coverage_info_to_return[sample+"_mrk_dup"]=str(coverage_mrk_dup)
-    return coverage_info_to_return
+    if len(all_contigs) > 0:
+        contig = all_contigs[0]
+        coverage_info_to_return = {}
+        sample_names = coverage_info.get_all_samples()
+        for sample in sample_names:
+            coverage = sum([coverage_info.get_contig_coverage_value(contig, sample) for contig in all_contigs])
+            coverage_mrk_dup = sum(
+                [coverage_info.get_contig_coverage_mrk_dup_value(contig, sample) for contig in all_contigs])
+            coverage_info_to_return[sample] = str(coverage)
+            coverage_info_to_return[sample + "_mrk_dup"] = str(coverage_mrk_dup)
+        return coverage_info_to_return
+    else:
+        return None
+
 
 
 def count_SNPs(vcf_file):

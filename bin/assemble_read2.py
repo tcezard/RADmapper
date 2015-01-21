@@ -8,15 +8,21 @@ import sys
 import os
 import logging
 from optparse import OptionParser
+
 import command_runner
-import RAD_assemble_read2, RAD_smalt_align_reads_back_to_consensus, RAD_merge_results, RAD_bam_to_fastq, RAD_summarize_assembly
+import RAD_assemble_read2
+import RAD_smalt_align_reads_back_to_consensus
+import RAD_merge_results
+import RAD_bam_to_fastq
+import RAD_summarize_assembly
 from utils import utils_logging
 from utils import utils_commands
+
 
 def get_readgroup_from_bam(bam_files):
     all_read_groups=[]
     for bam_file in bam_files:
-        command = "samtools view -H %s | grep RG "%bam_file
+        command = "samtools view -H %s | grep '^@RG' " % bam_file
         stdout, process = utils_commands.get_output_stream_from_command(command)
         for line in stdout:
             all_read_groups.append(line.strip())

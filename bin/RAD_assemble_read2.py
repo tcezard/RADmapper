@@ -3,16 +3,20 @@
 Created on 19 March  2012
 @author: tcezard
 '''
-import sys, os, re
-from utils import utils_logging, utils_commands
-import logging, threading
+import sys
+import os
+import re
+import logging
 from optparse import OptionParser
 from glob import glob
+import time
+
+from utils import utils_logging, utils_commands
 import command_runner
 from utils.FastaFormat import FastaReader
-import time
 from RAD_merge_read1_and_read2 import merge_2_contigs
 from RAD_merge_results import merge_by_chunck, concatenate_file
+
 
 VELVETOPT_ALIAS=["velvetopt","velvetoptimiser"]
 VELVET_ALIAS=["velvet"]
@@ -22,6 +26,7 @@ VELVETKCLC_ALIAS=["velvetkclc"]
 CLC_ALIAS=["clc","clcbio"]
 SOAPDENOVO_ALIAS=["soap","soapdenovo"]
 IDBA_ALIAS=["idba","idba_ud"]
+CAP3_ALIAS = ["cap3", "cap"]
 NO_ASSEMBLER=["None", "no", ""]
 
 
@@ -35,22 +40,26 @@ ALL_ASSEMBLERS.extend(VELVETKCLC_ALIAS)
 ALL_ASSEMBLERS.extend(CLC_ALIAS)
 ALL_ASSEMBLERS.extend(SOAPDENOVO_ALIAS)
 ALL_ASSEMBLERS.extend(IDBA_ALIAS)
+ALL_ASSEMBLERS.extend(CAP3_ALIAS)
 ALL_ASSEMBLERS.extend(NO_ASSEMBLER)
 
 velvetOptimiser_bin="VelvetOptimiser.pl"
 velveth_bin="velveth"
 velvetg_bin="velvetg"
 velvetk_bin="velvetk.pl"
-clc_novo_bin="clc_novo_assemble"
+clc_novo_bin = "clc_assembler"
 SOAPdenovo_bin="SOAPdenovo31mer"
 idba_ud_bin="idba_ud"
-def run_velvetOptimiser(fastq_file_name, low_k=19, high_k=99, outputdir='velvetopt', **kwarg):
+cap3_bin = "cap3"
+
+
+def run_velvetOptimiser(fastq_file_name, low_k=59, high_k=99, outputdir='velvetopt', **kwarg):
     command='rm -rf %s'%outputdir
     if os.path.exists(outputdir):
         return_code = command_runner.run_command(command)
     log_file='%s.log'%outputdir
-    command_tmp="%s -f '-fastq -short %s' --s %s --e %s --k max --c max --d %s 2>&1 >%s"%(velvetOptimiser_bin)
-    command=command_tmp%(fastq_file_name,low_k,high_k,outputdir, log_file)
+    command_tmp = "%s -f '-fastq -short %s' --s %s --e %s --k max --c max --d %s 2>&1 >%s"
+    command = command_tmp % (velvetOptimiser_bin, fastq_file_name, low_k, high_k, outputdir, log_file)
     return_code = command_runner.run_command(command)
     
     contig_files = glob('%s/contigs.fa'%outputdir)
@@ -126,9 +135,11 @@ def run_clc_assemble(fastq_file_name, word_size=None, output_dir='clc_bio', **kw
     if not os.path.exists(output_dir):
         return_code = command_runner.run_command(command)
     if word_size:
-        command = "%s -v -w %s -q %s -o clc_bio/contigs.fa -m 100 2>&1 >%s "%(clc_novo_bin, word_size, fastq_file_name, log_file)
+        command = "%s -v -w %s -q %s -o clc_bio/contigs.fa -b 200 -m 100 2>&1 >%s " % (
+        clc_novo_bin, word_size, fastq_file_name, log_file)
     else:
-        command = "%s -v -q %s -o clc_bio/contigs.fa -m 100 2>&1 >%s "%(clc_novo_bin, fastq_file_name, log_file)
+        command = "%s -v -q %s -o clc_bio/contigs.fa -b 200 -m 100 2>&1 >%s " % (
+        clc_novo_bin, fastq_file_name, log_file)
     return_code = command_runner.run_command(command)
     contig_files = glob('%s/contigs.fa'%output_dir)
     contig_file_name=None
@@ -167,6 +178,25 @@ def run_idba(fastq_file_name, max_read_len=101, **kwarg):
         contig_file_name = contig_files[0]
     return contig_file_name
 
+
+def run_cap3(fastq_file_name, output_dir="cap3", **kwarg):
+    log_file = '%s.log' % output_dir
+    fasta_file = os.path.join(output_dir, os.path.basename(fastq_file_name) + '.fa')
+    command = 'mkdir %s' % output_dir
+    if not os.path.exists(output_dir):
+        return_code = command_runner.run_command(command)
+    command = "seqtk seq -A %s > %s" % (fastq_file_name, fasta_file)
+    return_code = command_runner.run_command(command)
+
+    command = "%s %s 2>&1 >%s" % (cap3_bin, fasta_file, log_file)
+    return_code = command_runner.run_command(command)
+    contig_files = glob('%s.cap.contigs' % (fasta_file))
+    contig_file_name = None
+    if len(contig_files) == 1:
+        contig_file_name = contig_files[0]
+    return contig_file_name
+
+
 def pass_function(*args, **kwarg):
     pass
 
@@ -180,7 +210,13 @@ def correct_contig_file(contig_file, site_name, min_contig_len=101):
     max_len=0
     for fasta_record in fasta_reader:
         header, sequence=fasta_record
-        if len(sequence)>min_contig_len:
+        length_A = sum([len(e) for e in re.findall('[A]{7,}', sequence)])
+        length_C = sum([len(e) for e in re.findall('[C]{7,}', sequence)])
+        length_G = sum([len(e) for e in re.findall('[G]{7,}', sequence)])
+        length_T = sum([len(e) for e in re.findall('[T]{7,}', sequence)])
+        total_repeat = sum([length_A, length_C, length_G, length_T])
+
+        if len(sequence) > min_contig_len and float(total_repeat) / len(sequence) < .5:
             nb_seq+=1
             if len(sequence)>max_len:
                 max_len=len(sequence)
@@ -190,7 +226,51 @@ def correct_contig_file(contig_file, site_name, min_contig_len=101):
     open_file.close()
     return (corrected_file, nb_seq, max_len)
 
-def run_assembly(assembly_function, fastq_file, output_dir=None, estimated_size=600, name=None):
+
+def clean_fastq(fastq_file, rg_ids=[], subsample_nb_read=None):
+    if rg_ids:
+        fastq_file = keep_read_from_samples(fastq_file, rg_ids)
+    adapter_trim = fastq_file + '.adapter_trimmed'
+    if not os.path.exists(adapter_trim):
+        command = "scythe -q sanger -a /ifs/seqarchive/adapters/adapters_04052012.fasta -o %s %s" % (
+        adapter_trim, fastq_file)
+        command_runner.run_command(command)
+    qual_trim = adapter_trim + ".qual_trimmed"
+    if not os.path.exists(qual_trim):
+        command = "sickle se -f %s -t sanger -o %s" % (adapter_trim, qual_trim)
+        command_runner.run_command(command)
+    if subsample_nb_read:
+        sub_sampled = qual_trim + ".%s" % subsample_nb_read
+        if not os.path.exists(sub_sampled):
+            command = "seqtk sample %s %s > %s" % (qual_trim, subsample_nb_read, sub_sampled)
+            command_runner.run_command(command)
+        return sub_sampled
+    else:
+        return qual_trim
+
+
+def keep_read_from_samples(fastq_file, rg_ids=[]):
+    filtered = fastq_file + '.RG_filtered'
+    logging.info('Remove unwanted Read groups from %s > %s' % (fastq_file, filtered))
+    fastq_to_keep = []
+    fastq_lines = []
+    line_count = 0
+    with open(fastq_file, 'r') as open_input:
+        for line in open_input:
+            line_count += 1
+            fastq_lines.append(line.strip())
+            if line_count % 4 == 0:
+                rg = fastq_lines[0].split('RGID:')[1].strip('/2')
+                if rg in rg_ids:
+                    fastq_to_keep.append('\n'.join(fastq_lines))
+                fastq_lines = []
+
+    with open(filtered, 'w') as open_output:
+        open_output.write('\n'.join(fastq_to_keep))
+    return filtered
+
+
+def run_assembly(assembly_function, fastq_file, output_dir=None, estimated_size=600, subsample_nb_read=None, name=None):
     if name is None:
         name,ext =os.path.splitext(os.path.basename(fastq_file))
     current_dir=None
@@ -198,6 +278,8 @@ def run_assembly(assembly_function, fastq_file, output_dir=None, estimated_size=
         logging.debug('change directory to %s'%output_dir)
         current_dir=os.getcwd()
         os.chdir(output_dir)
+    rg_ids = []
+    fastq_file = clean_fastq(fastq_file, rg_ids=rg_ids, subsample_nb_read=subsample_nb_read)
     contig_file = assembly_function(fastq_file, estimated_size=estimated_size)
     if contig_file:
         contig_file = os.path.abspath(contig_file)
@@ -336,23 +418,11 @@ def trim_additional_merged_contigs(original_contig, merged_contig):
     
 
 def concatenate_consensus(all_fasta_files,output_merge_file):
-    output_file = merge_by_chunck(all_fasta_files, concatenate_file, output_merge_file)
+    output_file = merge_by_chunck(all_fasta_files, concatenate_file, output_merge_file,
+                                  output_dir=os.path.dirname(output_merge_file))
     #command = "cat %s > %s "%(' '.join(all_fasta_files), output_merge_file)
     #command_runner.run_command(command)
 
-#def concatenate_consensus(read1_consensus, read2_consensus, output_merge_file):
-#    open_output = open(output_merge_file,'w')
-#    open_read1 = open(read1_consensus)
-#    open_read2 = open(read2_consensus)
-#    fasta_reader1 = FastaReader(open_read1)
-#    read1_name, read1_sequence = fasta_reader1.next()
-#    open_read1.close()
-#    open_output.write(">%s\n%s\n"%(read1_name, read1_sequence))
-#    fasta_reader2 = FastaReader(open_read2)
-#    for read2_name, read2_sequence in fasta_reader2:
-#        open_output.write(">%s\n%s\n"%(read2_name, read2_sequence))
-#    open_read2.close()
-#    open_output.close()
 
 def force_merge_consensus(read1_consensus, read2_consensus, output_merge_file):
     open_output = open(output_merge_file,'w')
@@ -397,8 +467,8 @@ def compare_contig_file(contig_file1,contig_file2):
         return nb_contig1-nb_contig2
 
 
-
-def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=600, read1_fasta=None, name=None, force_merge=False):
+def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=600, subsample_nb_read=None,
+                       read1_fasta=None, name=None, force_merge=False):
     fastq_file=os.path.abspath(fastq_file)
     #output_dir='%s_dir'%fastq_file
     if not os.path.exists(output_dir):
@@ -406,7 +476,9 @@ def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated
         return_code = command_runner.run_command(command)
     for assembly_function in assembly_function_list:
         #Assemble with provided assembler
-        (contig_file, nb_seq, max_len) = run_assembly(assembly_function,fastq_file,output_dir,estimated_size=estimated_size, name=name)
+        (contig_file, nb_seq, max_len) = run_assembly(assembly_function, fastq_file, output_dir,
+                                                      estimated_size=estimated_size,
+                                                      subsample_nb_read=subsample_nb_read, name=name)
         #Merge read one and read2 contig
         if contig_file:
             #TODO: This function gets run twice need to change that as the second run is not useful
@@ -419,7 +491,7 @@ def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated
     return os.path.join(output_dir, "best_assembly.fa")
 
 
-def run_all_fastq_files(directory,assembly_function_list,estimated_size, force_merge=False):
+def run_all_fastq_files(directory, assembly_function_list, estimated_size, subsample_nb_read=None, force_merge=False):
     directory=os.path.abspath(directory)
     all_fastqs = glob(os.path.join(directory,'*','*_2.fastq'))
 
@@ -428,9 +500,10 @@ def run_all_fastq_files(directory,assembly_function_list,estimated_size, force_m
         output_dir=os.path.dirname(fastq_file)
         name=os.path.basename(fastq_file)[:-len("_2.fastq")]
         read1_fasta=os.path.join(output_dir,name+"_1.fa")
-        
 
-        contig_file = run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=estimated_size, read1_fasta=read1_fasta, name=name, force_merge=force_merge)
+        contig_file = run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=estimated_size,
+                                         subsample_nb_read=subsample_nb_read, read1_fasta=read1_fasta, name=name,
+                                         force_merge=force_merge)
         if contig_file:
             all_contig_list.append(contig_file)
         logging.info("\n")
@@ -453,6 +526,8 @@ def get_assembly_function(assembler_name):
         return run_soapdenovo
     if assembler_name in IDBA_ALIAS:
         return run_idba
+    if assembler_name in CAP3_ALIAS:
+        return run_cap3
     if assembler_name in NO_ASSEMBLER:
         return pass_function
     logging.error("Unknown assembler: %s"%assembler_name)
@@ -484,9 +559,17 @@ def main():
         assembly_function=get_assembly_function(assembler_name)
         assembly_function_list.append(assembly_function)
     if options.fastq_dir:
-        run_all_fastq_files(options.fastq_dir,assembly_function_list, options.estimated_size, options.force_merge)
+        run_all_fastq_files(options.fastq_dir, assembly_function_list, options.estimated_size,
+                            options.subsample_nb_read,
+                            options.force_merge)
     elif options.fastq_file:
-        contig_file = run_one_fastq_file(options.fastq_file,assembly_function)
+        output_dir = os.path.dirname(options.fastq_file)
+        name = os.path.basename(options.fastq_file)[:-len("_2.fastq")]
+        read1_fasta = os.path.join(output_dir, name + "_1.fa")
+        contig_file = run_one_fastq_file(options.fastq_file, output_dir, assembly_function_list,
+                                         estimated_size=options.estimated_size,
+                                         subsample_nb_read=options.subsample_nb_read,
+                                         read1_fasta=read1_fasta, name=name, force_merge=options.force_merge)
     logging.info("Elapsed time:%.1f seconds"%(time.time()-start_time))
 
 def _prepare_optparser():
@@ -506,6 +589,8 @@ def _prepare_optparser():
                          help="The name of the assembler that will be used on the fastq files. Default: %default")
     optparser.add_option("-s","--estimated_size",dest="estimated_size",type="string",default="600",
                          help="The estimated size of the contig to assemble. It is used by velvetk to estimate the best kmer. Default: %default")
+    optparser.add_option("-S", "--subsample_nb_read", dest="subsample_nb_read", type="int", default=0,
+                         help="sub sample to the specified number of read before assembly. Default: %default")
     optparser.add_option("--force_merge",dest="force_merge",action='store_true',default=False,
                          help="Force merged the consensus: add a run of 100 N in between each sequence. Default: %default")
     optparser.add_option("--print",dest="print_command",action='store_true',default=False,

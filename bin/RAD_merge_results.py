@@ -4,20 +4,16 @@
 Created on 19 March  2012
 @author: tcezard
 '''
-import sys, os
-from utils import utils_logging, utils_commands, longest_common_substr_from_start, utils_param, sort_bam_file_per_coordinate
-import logging, threading, re
+import sys
+import os
+import logging
 from optparse import OptionParser
 from glob import glob
+
+from utils import utils_logging
 import command_runner
-from utils.FastaFormat import FastaReader
-import time
-from RAD_merge_read1_and_read2 import merge_2_contigs
 from RAD_merge_bam_files import merge_bam_files
-from utils.parameters import Config_file_error
-from utils.utils_commands import get_output_stream_from_command
-from collections import Counter
-import multiprocessing
+
 
 
 #get the path to the current script to infer the path to RAD_set_read1_consensus_to_read2.py
@@ -54,7 +50,10 @@ def concatenate_file(list_of_file,output_file=None, **kwargs):
     It can take a filter keyword argument to grep out using the provided value"""
     if not output_file:
         #Create a generic name and put it in the current working directory
-        working_directory=os.getcwd()
+        if kwargs.has_key('output_dir'):
+            working_directory = kwargs.get('output_dir')
+        else:
+            working_directory = os.getcwd()
         i=1
         output_file_template=os.path.join(working_directory,'tmp_concatenate_%s')
         output_file=output_file_template%i
@@ -225,8 +224,8 @@ def merge_all_results(directory):
         return_code = merge_all_snps_files_from_directories(directory)
     if return_code==0:
         return_code = merge_all_summary_files_from_directories(directory)
-    if return_code==0:
-        return_code = merge_all_bam_files_from_directories(directory)
+    # if return_code==0:
+    #    return_code = merge_all_bam_files_from_directories(directory)
     return return_code
 
 def main():
