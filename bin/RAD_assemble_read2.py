@@ -227,8 +227,7 @@ def correct_contig_file(contig_file, site_name, min_contig_len=101):
     return (corrected_file, nb_seq, max_len)
 
 
-def clean_fastq(fastq_file, adapter_file='/ifs/seqarchive/adapters/adapters_04052012.fasta', rg_ids=[],
-                subsample_nb_read=None):
+def clean_fastq(fastq_file, adapter_file=None, rg_ids=[], subsample_nb_read=None):
     if rg_ids:
         fastq_file = keep_read_from_samples(fastq_file, rg_ids)
     if adapter_file:
@@ -236,7 +235,7 @@ def clean_fastq(fastq_file, adapter_file='/ifs/seqarchive/adapters/adapters_0405
         if not os.path.exists(adapter_trim):
             command = "scythe -q sanger -a %s -o %s %s" % (adapter_file, adapter_trim, fastq_file)
             command_runner.run_command(command)
-        fastq_file = adapter_file
+        fastq_file = adapter_trim
     qual_trim = fastq_file + ".qual_trimmed"
     if not os.path.exists(qual_trim):
         command = "sickle se -f %s -t sanger -o %s" % (adapter_trim, qual_trim)
@@ -283,7 +282,7 @@ def run_assembly(assembly_function, fastq_file, output_dir=None, estimated_size=
         current_dir=os.getcwd()
         os.chdir(output_dir)
     rg_ids = []
-    fastq_file = clean_fastq(fastq_file, adapter_file, rg_ids=rg_ids, subsample_nb_read=subsample_nb_read)
+    fastq_file = clean_fastq(fastq_file, adapter_file=adapter_file, rg_ids=rg_ids, subsample_nb_read=subsample_nb_read)
     contig_file = assembly_function(fastq_file, estimated_size=estimated_size)
     if contig_file:
         contig_file = os.path.abspath(contig_file)
