@@ -272,7 +272,7 @@ def keep_read_from_samples(fastq_file, rg_ids=[]):
     return filtered
 
 
-def run_assembly(assembly_function, fastq_file, output_dir=None, estimated_size=600, subsample_nb_read=None, name=None,
+def run_assembly(assembly_function, fastq_file, output_dir=None, estimated_size=600, subsample_nb_read=None, rg_ids=[], name=None,
                  adapter_file=None):
     if name is None:
         name,ext =os.path.splitext(os.path.basename(fastq_file))
@@ -281,7 +281,6 @@ def run_assembly(assembly_function, fastq_file, output_dir=None, estimated_size=
         logging.debug('change directory to %s'%output_dir)
         current_dir=os.getcwd()
         os.chdir(output_dir)
-    rg_ids = []
     fastq_file = clean_fastq(fastq_file, adapter_file=adapter_file, rg_ids=rg_ids, subsample_nb_read=subsample_nb_read)
     contig_file = assembly_function(fastq_file, estimated_size=estimated_size)
     if contig_file:
@@ -470,7 +469,7 @@ def compare_contig_file(contig_file1,contig_file2):
         return nb_contig1-nb_contig2
 
 
-def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=600, subsample_nb_read=None,
+def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=600, subsample_nb_read=None, rg_ids=[],
                        read1_fasta=None, name=None, force_merge=False, adapter_file=None):
     fastq_file=os.path.abspath(fastq_file)
     #output_dir='%s_dir'%fastq_file
@@ -481,8 +480,8 @@ def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated
         #Assemble with provided assembler
         (contig_file, nb_seq, max_len) = run_assembly(assembly_function, fastq_file, output_dir,
                                                       estimated_size=estimated_size,
-                                                      subsample_nb_read=subsample_nb_read, name=name,
-                                                      adapter_file=adapter_file)
+                                                      subsample_nb_read=subsample_nb_read, rg_ids=rg_ids,
+                                                      name=name, adapter_file=adapter_file)
         #Merge read one and read2 contig
         if contig_file:
             #TODO: This function gets run twice need to change that as the second run is not useful
@@ -495,7 +494,7 @@ def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated
     return os.path.join(output_dir, "best_assembly.fa")
 
 
-def run_all_fastq_files(directory, assembly_function_list, estimated_size, subsample_nb_read=None, force_merge=False,
+def run_all_fastq_files(directory, assembly_function_list, estimated_size, subsample_nb_read=None, rg_ids=[], force_merge=False,
                         adapter_file=None):
     directory=os.path.abspath(directory)
     all_fastqs = glob(os.path.join(directory,'*','*_2.fastq'))
@@ -507,8 +506,8 @@ def run_all_fastq_files(directory, assembly_function_list, estimated_size, subsa
         read1_fasta=os.path.join(output_dir,name+"_1.fa")
 
         contig_file = run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=estimated_size,
-                                         subsample_nb_read=subsample_nb_read, read1_fasta=read1_fasta, name=name,
-                                         force_merge=force_merge, adapter_file=adapter_file)
+                                         subsample_nb_read=subsample_nb_read, rg_ids=rg_ids, read1_fasta=read1_fasta,
+                                         name=name, force_merge=force_merge, adapter_file=adapter_file)
         if contig_file:
             all_contig_list.append(contig_file)
         logging.info("\n")
@@ -563,9 +562,13 @@ def main():
     for assembler_name in all_assembler_to_try:
         assembly_function=get_assembly_function(assembler_name)
         assembly_function_list.append(assembly_function)
+    if options.rg_ids:
+        rg_ids=options.rg_ids.split()
+    else:
+        rg_ids=[]
     if options.fastq_dir:
         run_all_fastq_files(options.fastq_dir, assembly_function_list, options.estimated_size,
-                            options.subsample_nb_read,
+                            options.subsample_nb_read, rg_ids,
                             options.force_merge, adapter_file=options.adapter_file)
     elif options.fastq_file:
         output_dir = os.path.dirname(options.fastq_file)
@@ -598,8 +601,10 @@ def _prepare_optparser():
     optparser.add_option("-S", "--subsample_nb_read", dest="subsample_nb_read", type="int", default=0,
                          help="sub sample to the specified number of read before assembly. Default: %default")
     optparser.add_option("-A", "--adapter_file", dest="adapter_file", type="string",
-                         default="/ifs/seqarchive/adapters/adapters_19122011_and_trueseq_universal_adapter.fasta",
+                         default="/ifs/seqarchive/adapters/illumina_adapters_20150126.fasta",
                          help="Specify an adapter file to trim before running the assembly. Default: %default")
+    optparser.add_option("--rg_ids", dest="rg_ids", type="string", default="",
+                         help="Specify a list of read group ids that will be used for the assembly. Default: %default")
     optparser.add_option("--force_merge",dest="force_merge",action='store_true',default=False,
                          help="Force merged the consensus: add a run of 100 N in between each sequence. Default: %default")
     optparser.add_option("--print",dest="print_command",action='store_true',default=False,

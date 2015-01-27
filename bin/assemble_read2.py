@@ -30,7 +30,7 @@ def get_readgroup_from_bam(bam_files):
 
 
 def extract_and_assemble(bam_files, genome_file, white_list_file, output_dir, assembly_function_list,
-                         subsample_nb_read=None, adapter_file=None, force_merge=False):
+                         subsample_nb_read=None,rg_ids=[], adapter_file=None, force_merge=False):
     logging.info('processing %s'%output_dir)
     logging.info("--------------------------")
     logging.info("Extract the reads from bam")
@@ -42,7 +42,7 @@ def extract_and_assemble(bam_files, genome_file, white_list_file, output_dir, as
     logging.info("Assemble read2")
     logging.info("--------------")
     RAD_assemble_read2.run_all_fastq_files(output_dir, assembly_function_list, 600, force_merge=force_merge,
-                                           subsample_nb_read=subsample_nb_read, adapter_file=adapter_file)
+                                           subsample_nb_read=subsample_nb_read, rg_ids=rg_ids, adapter_file=adapter_file)
     logging.info("----------------------------")
     logging.info("Extract read groups from bam")
     logging.info("----------------------------")
@@ -88,9 +88,13 @@ def main():
         assembly_function=RAD_assemble_read2.get_assembly_function(assembler_name)
         assembly_function_list.append(assembly_function)
     command_runner.set_command_to_run_localy()
+    if options.rg_ids:
+        rg_ids=options.rg_ids.split()
+    else:
+        rg_ids=[]
     extract_and_assemble(bam_files, options.read1_consensus_file, options.white_list_file, options.output_dir,
-                         assembly_function_list,
-                         subsample_nb_read=options.subsample_nb_read, adapter_file=options.adapter_file)
+                         assembly_function_list, subsample_nb_read=options.subsample_nb_read, rg_ids=rg_ids,
+                         adapter_file=options.adapter_file)
 
 def _prepare_optparser():
     """Prepare optparser object. New options will be added in this
@@ -114,8 +118,10 @@ def _prepare_optparser():
     optparser.add_option("-S", "--subsample_nb_read", dest="subsample_nb_read", type="int", default=0,
                          help="sub sample to the specified number of read before assembly. Default: %default")
     optparser.add_option("-A", "--adapter_file", dest="adapter_file", type="string",
-                         default="/ifs/seqarchive/adapters/adapters_19122011_and_trueseq_universal_adapter.fasta",
+                         default="/ifs/seqarchive/adapters/illumina_adapters_20150126.fasta",
                          help="Specify an adapter file to trim before running the assembly. Default: %default")
+    optparser.add_option("--rg_ids", dest="rg_ids", type="string", default="",
+                         help="Specify a list of read group ids that will be used for the assembly. Default: %default")
     optparser.add_option("--force_merge",dest="force_merge",action='store_true',default=False,
                          help="Force merged the consensus: add a run of 100 N in between each sequence. Default: %default")
     optparser.add_option("--print",dest="print_command",action='store_true',default=False,
