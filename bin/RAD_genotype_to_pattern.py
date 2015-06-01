@@ -177,8 +177,8 @@ def get_offsprings_possible_genotypes_om():
 
     om_parents_pattern = {"0/1 0/0": {"type": "D1.10", "0/0": "a", "0/1": "ab", "1/0": "ab"},
                           "0/1 1/1": {"type": "D1.10", "1/1": "a", "0/1": "ab", "1/0": "ab"},
-                          "0/0 0/1": {"type": "D1.10", "0/0": "a", "0/1": "ab", "1/0": "ab"},
-                          "1/1 0/1": {"type": "D1.10", "1/1": "a", "0/1": "ab", "1/0": "ab"},
+                          "0/0 0/1": {"type": "D2.15", "0/0": "a", "0/1": "ab", "1/0": "ab"},
+                          "1/1 0/1": {"type": "D2.15", "1/1": "a", "0/1": "ab", "1/0": "ab"},
                           "0/1 0/1": {"type": "B3.7", "0/0": "a", "0/1": "ab", "1/0": "ab", "1/1": "b"},
                           "0/1 0/2": {"type": "A.2", "0/0": "a", "0/1": "ba", "0/2": "ac", "1/2": "bc"},
                           "0/1 1/2": {"type": "A.2", "1/1": "a", "0/1": "ba", "0/2": "bc", "1/2": "ac"},
@@ -341,8 +341,7 @@ class Phased_vcf_reader():
                 add_SNP_after = False
                 end_of_phase = True
                 #logging.debug("stop phasing because %s:%s is removed"%(vcf_records.get_reference(),vcf_records.get_position()))
-            elif vcf_records.is_phased_with_previous(sample=self.mother) and vcf_records.is_phased_with_previous(
-                    sample=self.father):
+            elif vcf_records.is_phased_with_previous(sample=self.mother) and vcf_records.is_phased_with_previous(sample=self.father):
                 #Keep the Phase if both parents are keeping the phase
                 #Add this SNP to the phased set
                 add_SNP_before = True
@@ -704,7 +703,7 @@ def output_marker_in_onemap(name, possible_genotypes, ordered_samples, geno_pare
         if result:
             all_sample_out.append(result)
         else:
-            all_sample_out.append("--")
+            all_sample_out.append("-")
     if "".join(all_sample_out).count("-") / 2 > max_missing_offspring:
         logging.info(
             "nb missing offspring = %s>%s: %s" % ("".join(all_sample_out).count("-") / 2, max_missing_offspring, name))
