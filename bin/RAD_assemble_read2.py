@@ -168,9 +168,9 @@ def run_soapdenovo(fastq_file_name, max_read_len=101, **kwarg):
     return contig_file_name
 
 
-def run_idba(fastq_file_name, max_read_len=101, **kwarg):
+def run_idba(fastq_file_name, max_read_len=200, **kwarg):
     log_file='idba_ud.log'
-    command="%s -r %s -o idba_ud --min_contig %s --num_threads 1 2>&1 >%s"%(idba_ud_bin,fastq_file_name, max_read_len,log_file)
+    command="%s -r %s -o idba_ud --min_contig %s --num_threads 1 --mink 40  --min_count 8 --min_support 4   2>&1 >%s"%(idba_ud_bin,fastq_file_name, max_read_len,log_file)
     return_code = command_runner.run_command(command)
     contig_files = glob('idba_ud/contig.fa')
     contig_file_name=None
@@ -238,17 +238,17 @@ def clean_fastq(fastq_file, adapter_file=None, rg_ids=[], subsample_nb_read=None
         fastq_file = adapter_trim
     qual_trim = fastq_file + ".qual_trimmed"
     if not os.path.exists(qual_trim):
-        command = "sickle se -f %s -t sanger -o %s" % (adapter_trim, qual_trim)
+        command = "sickle se -f %s -t sanger -o %s" % (fastq_file, qual_trim)
         command_runner.run_command(command)
         fastq_file = qual_trim
     if subsample_nb_read:
         sub_sampled = qual_trim + ".%s" % subsample_nb_read
         if not os.path.exists(sub_sampled):
-            command = "seqtk sample %s %s > %s" % (qual_trim, subsample_nb_read, sub_sampled)
+            command = "seqtk sample %s %s > %s" % (fastq_file, subsample_nb_read, sub_sampled)
             command_runner.run_command(command)
         return sub_sampled
     else:
-        return qual_trim
+        return fastq_file
 
 
 def keep_read_from_samples(fastq_file, rg_ids=[]):
@@ -497,14 +497,13 @@ def run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated
 def run_all_fastq_files(directory, assembly_function_list, estimated_size, subsample_nb_read=None, rg_ids=[], force_merge=False,
                         adapter_file=None):
     directory=os.path.abspath(directory)
-    all_fastqs = glob(os.path.join(directory,'*','*_2.fastq'))
+    all_consensus_dirs = glob(os.path.join(directory,'*_dir'))
 
     all_contig_list=[]
-    for fastq_file in all_fastqs:
-        output_dir=os.path.dirname(fastq_file)
-        name=os.path.basename(fastq_file)[:-len("_2.fastq")]
+    for output_dir in all_consensus_dirs:
+        name=os.path.basename(output_dir)[:-len("_dir")]
+        fastq_file=os.path.join(output_dir,name+"_2.fastq")
         read1_fasta=os.path.join(output_dir,name+"_1.fa")
-
         contig_file = run_one_fastq_file(fastq_file, output_dir, assembly_function_list, estimated_size=estimated_size,
                                          subsample_nb_read=subsample_nb_read, rg_ids=rg_ids, read1_fasta=read1_fasta,
                                          name=name, force_merge=force_merge, adapter_file=adapter_file)

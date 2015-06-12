@@ -30,7 +30,6 @@ def trim_fastq_to_length(fastq_file, output_file,  length):
 def fastq_2_bam(fastq_file, rgid, qual, files_and_dir, fifo):
     fastqToSam_jar=''
     sam_file=''
-    rgid
     run_fine=True
     command="java -Xmx2G -jar %s F1=%s O=%s RG=%s LB=%s SM=%s, QUALITY_FORMAT=%s"%(fastqToSam_jar,fastq_file,sam_file,rgid,rgid,rgid,qual)
     if fifo:
@@ -39,7 +38,7 @@ def fastq_2_bam(fastq_file, rgid, qual, files_and_dir, fifo):
     if return_code is not 0:
         run_fine = False 
     files_and_dir.append(sam_file)
-    sam_file2_tmp='%s.sam.tmp'%os.path.join(output_dir,fastq_name)
+    sam_file2_tmp='%s.sam.tmp'%os.path.join(output_dir, fastq_name)
     if fifo:
         if os.path.exists(sam_file2_tmp):
             os.remove(sam_file2_tmp)
@@ -77,7 +76,7 @@ def get_fasta_length(fasta_file):
 
 
 def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_dir=None, sample_name=None,
-                    clean_up=True, thread=1, read_group=None, illumina=False, fifo=False):
+                            clean_up=True, thread=1, read_group=None, illumina=False, fifo=False):
     run_fine=True
     try:
         pipeline_param=utils_param.get_pipeline_parameters()
@@ -95,7 +94,6 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
         #logging.exception('Config_file_error:')
         logging.critical("You need to have the environment variable properly set to use that script")
         return False
-
 
     return_code=0
 
@@ -119,7 +117,6 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
     
     length_fastq1=get_fastq_length(fastq_file1)
     length_fasta=get_fasta_length(genome_file)
-
 
     if length_fastq1>length_fasta:
         longer_reads = True
@@ -168,8 +165,7 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
             read_group_element.append("PL:ILLUMINA")
             read_group_element.append("SM:%s"%sample_name)
             read_group_command= '-r "%s"'%('\\t'.join(read_group_element))
-            
-    
+
     samtools_bin=os.path.join(samtools_dir,'samtools')
 
     #Starts processing
@@ -237,7 +233,7 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
         if return_code is not 0:
             run_fine = False
     
-
+    clean_up = False
     if run_fine and clean_up:
         return_code = remove_file(files_and_dir)
         if return_code is not 0:

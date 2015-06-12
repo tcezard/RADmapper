@@ -67,7 +67,7 @@ def reverse_complement(fastq_file):
     return rev_comp_file_name
 
 
-def run_smalt(consensus_file, read1_fastq, read2_fastq, **kwarg):
+def run_smalt_paired(consensus_file, read1_fastq, read2_fastq, **kwarg):
     index1 = '%s.sma' % consensus_file
     command = 'rm -rf %s' % index1
     if os.path.exists(index1):
@@ -89,8 +89,17 @@ def run_smalt(consensus_file, read1_fastq, read2_fastq, **kwarg):
     sam_file = name + '.sam'
     command = "smalt map -f samsoft -o %s %s %s %s" % (sam_file, consensus_file, read1_fastq, read2_fastq_rev_comp)
     return_code = command_runner.run_command(command)
+    return sam_file
 
-    return sam_file;
+def run_smalt_single(consensus_file, read1_fastq, **kwarg):
+
+    name, ext = os.path.splitext(read1_fastq)
+    sam_file = name + '_single.sam'
+    command = "smalt map -f samsoft -o %s %s %s" % (sam_file, consensus_file, read1_fastq)
+    return_code = command_runner.run_command(command)
+    return sam_file
+
+
 
 
 def read_readgroup_file(readgroup_file):
@@ -102,7 +111,7 @@ def read_readgroup_file(readgroup_file):
     return all_read_groups
 
 
-def correct_smalt_sam_file(sam_file, all_read_groups):
+def correct_smalt_sam_file(sam_file, all_read_groups, single_sam_file=None):
     first_read = True
     open_sam = open(sam_file)
     tmp, ext = os.path.splitext(sam_file)
@@ -126,11 +135,23 @@ def correct_smalt_sam_file(sam_file, all_read_groups):
                 sp_line.append("RG:Z:%s" % match.group(2))
                 open_corrected_sam.write('\t'.join(sp_line) + '\n')
     open_sam.close()
+    #append sam from single end at the end of the paired end one (ignore header)
+    if single_sam_file:
+        open_sam = open(single_sam_file)
+        for line in open_sam:
+            if not line.startswith('@'):
+                sp_line = line.strip().split()
+                match = re.match('(.+)RGID:(.+)', sp_line[0])
+                if match:
+                    sp_line[0] = match.group(1)
+                    sp_line.append("RG:Z:%s" % match.group(2))
+                    open_corrected_sam.write('\t'.join(sp_line) + '\n')
+        open_sam.close()
     open_corrected_sam.close()
     return corrected_sam_file
 
 
-def run_alignment(consensus_file, read1_fastq, read2_fastq, all_read_groups, snp_call=False):
+def run_alignment(consensus_file, read1_fastq, read2_fastq, single_fastq, all_read_groups, snp_call=False):
     try:
         pipeline_param = utils_param.get_pipeline_parameters()
         picard_dir = pipeline_param.get_picard_dir()
@@ -145,10 +166,16 @@ def run_alignment(consensus_file, read1_fastq, read2_fastq, all_read_groups, snp
     clean_up_prev_run(name)
 
     file_to_remove = []
-    sam_file = run_smalt(consensus_file, read1_fastq, read2_fastq)
+    sam_file = run_smalt_paired(consensus_file, read1_fastq, read2_fastq)
     file_to_remove.append(sam_file)
-    corrected_sam_file = correct_smalt_sam_file(sam_file, all_read_groups)
+    if os.path.exists(single_fastq):
+        sam_file_single = run_smalt_single(consensus_file, single_fastq)
+        file_to_remove.append(sam_file_single)
+        corrected_sam_file = correct_smalt_sam_file(sam_file, all_read_groups, sam_file_single)
+    else:
+        corrected_sam_file = correct_smalt_sam_file(sam_file, all_read_groups)
     file_to_remove.append(corrected_sam_file)
+
     name, ext = os.path.splitext(corrected_sam_file)
 
     output_bam = os.path.join(name + "_sorted.bam")
@@ -188,7 +215,7 @@ def SNP_call_with_samtools(samtools_dir, name, bam_file, ref_file):
     if not os.path.exists(bcftools_bin):
         bcftools_bin = os.path.join(samtools_dir, "bcftools")
     samtools_raw_vcf = os.path.join(name + '_sorted_mrk_dup_fixed_samtools.vcf')
-    command = "%s mpileup -d 2000 -ADESuf %s %s | %s view -gv - > %s"
+    command = "%s mpileup -d 50000 -ADESuf %s %s | %s view -gv - > %s"
     command = command % (samtools_bin, ref_file, bam_file, bcftools_bin, samtools_raw_vcf)
     command_runner.run_command(command)
 
@@ -210,7 +237,8 @@ def run_all_fastq_files(directory, readgroup_file=None, all_read_groups=None, sn
         consensus_file = os.path.join(sub_dir, 'best_assembly.fa')
         read1_fastq = os.path.join(sub_dir, name + "_1.fastq")
         read2_fastq = os.path.join(sub_dir, name + "_2.fastq")
-        run_alignment(consensus_file, read1_fastq, read2_fastq, all_read_groups, snp_call)
+        single_fastq = os.path.join(sub_dir, name + "_single.fastq")
+        run_alignment(consensus_file, read1_fastq, read2_fastq, single_fastq,  all_read_groups, snp_call)
 
 
 def main():
