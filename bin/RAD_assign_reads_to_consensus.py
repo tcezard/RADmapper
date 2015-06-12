@@ -233,7 +233,6 @@ def run_BWA_Command_for_RAD(genome_file, fastq_file1, fastq_file2=None, output_d
         if return_code is not 0:
             run_fine = False
     
-    clean_up = False
     if run_fine and clean_up:
         return_code = remove_file(files_and_dir)
         if return_code is not 0:
