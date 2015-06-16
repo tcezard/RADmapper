@@ -127,7 +127,7 @@ def _prepare_optparser():
     optparser.add_option("--print",dest="print_command",action='store_true',default=False,
                          help="print the commands instead of running them. Default: %default")
     optparser.add_option("--debug",dest="debug",action='store_true',default=False,
-                         help="Output debug statment. Default: %default")
+                         help="Output debug statement. Default: %default")
     return optparser
 
 

@@ -63,54 +63,76 @@ def get_read_group_from_bam_files(bam_files):
 
 def load_from_sites_generator2(bam_file, options='', consensus=''):
     """This function return a generator that iterates over read pair where both pairs are mapping.
-    @return a tuple containing read1 read2 and the restriction site position."""
+    @return a tuple containing read1 read2 and optionally unmatched read1"""
     iter_sam = get_pysam_iterator(bam_file, options=options, consensus=consensus)
     all_unmatched_read1 = {}
     all_unmatched_read2 = {}
+    single_reads = []
     count_line = 0
     for align_read in iter_sam:
         count_line += 1
+        if align_read.is_unmapped:
+            continue
         if align_read.is_read1:
             align_read_r2 = all_unmatched_read2.pop(align_read.qname, None)
             if align_read_r2:
                 yield ((align_read, align_read_r2))
             else:
                 all_unmatched_read1[align_read.qname] = align_read
-        else:
+        elif align_read.is_read2:
             sam_record_r1 = all_unmatched_read1.pop(align_read.qname, None)
             if sam_record_r1:
                 yield ((sam_record_r1, align_read))
             else:
                 all_unmatched_read2[align_read.qname] = align_read
+        else:
+            single_reads.append(align_read)
+    if single_reads:
+        logging.warning("{} single read 1".format(len(single_reads)))
+        for read1 in single_reads:
+            yield ((read1, None))
+    if all_unmatched_read1:
+        raise StandardError("{} reads 1 left in the unmatch in generator\n{}".format(len(all_unmatched_read1), ', '.join(all_unmatched_read1.keys())))
+    if all_unmatched_read2:
+        raise StandardError("{} reads 2 left in the unmatch in generator\n{}".format(len(all_unmatched_read2), ', '.join(all_unmatched_read2.keys())))
+
+
 
 
 def process_one_bam_file_one_consensus(bam_file, consensus_name):
     sam_pair_generator = load_from_sites_generator2(bam_file, consensus=consensus_name)
     all_first_reads_for_consensus = []
     all_second_reads_for_consensus = []
+    single_end_for_consensus = []
     for aligned_read_r1, aligned_read_r2, in sam_pair_generator:
         rgid = aligned_read_r1.opt('RG')
-        all_first_reads_for_consensus.append(aligned_read_to_fastq(aligned_read_r1, rgid=rgid))
-        all_second_reads_for_consensus.append(aligned_read_to_fastq(aligned_read_r2, rgid=rgid))
+        if aligned_read_r2:
+            all_first_reads_for_consensus.append(aligned_read_to_fastq(aligned_read_r1, rgid=rgid))
+            all_second_reads_for_consensus.append(aligned_read_to_fastq(aligned_read_r2, rgid=rgid))
+        else:
+            single_end_for_consensus.append(aligned_read_to_fastq(aligned_read_r1, rgid=rgid))
         aligned_read_r1 = None
         aligned_read_r2 = None
-    return all_first_reads_for_consensus, all_second_reads_for_consensus
+    return all_first_reads_for_consensus, all_second_reads_for_consensus, single_end_for_consensus
 
 
 def extract_reads_from_one_consensus(bam_files, output_dir, consensus_name, consensus_sequence):
     all_read1_for_that_consensus = []
     all_read2_for_that_consensus = []
+    all_single_end_for_consensus = []
     for bam_file in bam_files:
-        all_first_reads_for_consensus, all_second_reads_for_consensus = process_one_bam_file_one_consensus(bam_file,
+        all_first_reads_for_consensus, all_second_reads_for_consensus, single_end_for_consensus = process_one_bam_file_one_consensus(bam_file,
                                                                                                            consensus_name)
         all_read1_for_that_consensus.extend(all_first_reads_for_consensus)
         all_read2_for_that_consensus.extend(all_second_reads_for_consensus)
+        all_single_end_for_consensus.extend(single_end_for_consensus)
 
     consensus_directory = os.path.join(output_dir, consensus_name + '_dir')
     if not os.path.exists(consensus_directory):
         os.mkdir(consensus_directory)
     read1_file = os.path.join(consensus_directory, consensus_name + "_1.fastq")
     read2_file = os.path.join(consensus_directory, consensus_name + "_2.fastq")
+    single_read_file = os.path.join(consensus_directory, consensus_name + "_single.fastq")
     read1_consensus = os.path.join(consensus_directory, consensus_name + "_1.fa")
     open_file = open(read1_consensus, 'w')
     open_file.write('>%s\n%s\n' % (consensus_name, consensus_sequence))
@@ -123,6 +145,11 @@ def extract_reads_from_one_consensus(bam_files, output_dir, consensus_name, cons
     open_file = open(read2_file, 'w')
     open_file.write('\n'.join(all_read2_for_that_consensus))
     open_file.close()
+
+    if all_single_end_for_consensus:
+        open_file = open(single_read_file, 'w')
+        open_file.write('\n'.join(all_single_end_for_consensus))
+        open_file.close()
 
     return read1_consensus, read1_file, read2_file
 
@@ -146,32 +173,32 @@ def close_fastq_files():
 def extract_reads_from_one_bam_file(bam_file, output_dir, list_consensus, genome_loader):
     for consensus_name in list_consensus:
         consensus_name, consensus_sequence = genome_loader.get_chr(consensus_name)
-        all_first_reads_for_consensus, all_second_reads_for_consensus = process_one_bam_file_one_consensus(bam_file,
+        all_first_reads_for_consensus, all_second_reads_for_consensus, single_end_for_consensus = process_one_bam_file_one_consensus(bam_file,
                                                                                                            consensus_name)
         consensus_directory = os.path.join(output_dir, consensus_name + '_dir')
         read1_file = os.path.join(consensus_directory, consensus_name + "_1.fastq")
         read2_file = os.path.join(consensus_directory, consensus_name + "_2.fastq")
+        single_read_file = os.path.join(consensus_directory, consensus_name + "_single.fastq")
+
         if not os.path.exists(consensus_directory):
             os.mkdir(consensus_directory)
             read1_consensus = os.path.join(consensus_directory, consensus_name + "_1.fa")
             open_file = open(read1_consensus, 'w')
             open_file.write('>%s\n%s\n' % (consensus_name, consensus_sequence))
             open_file.close()
-            # open_file1 = open(read1_file,'w')
-            #      open_file2 = open(read2_file,'w')
-            #  else:
-            #      open_file1 = open(read1_file,'a')
-            #      open_file2 = open(read2_file,'a')
 
-        if all_first_reads_for_consensus:
+        if len(all_first_reads_for_consensus):
             open_file1 = _get_open_fastq_files(read1_file)
             open_file1.write('\n'.join(all_first_reads_for_consensus) + '\n')
         # open_file1.close()
         if all_second_reads_for_consensus:
             open_file2 = _get_open_fastq_files(read2_file)
             open_file2.write('\n'.join(all_second_reads_for_consensus) + '\n')
-        logging.info("Extract %s reads from %s" % (len(all_first_reads_for_consensus), consensus_name))
-        #open_file2.close()
+        if single_end_for_consensus:
+            open_file_single = _get_open_fastq_files(single_read_file)
+            open_file_single.write('\n'.join(single_end_for_consensus) + '\n')
+        logging.info("Extract %s read pairs and %s single reads from %s" % (len(all_first_reads_for_consensus), len(single_end_for_consensus),
+                                                                            consensus_name))
     close_bam_file(bam_file)
 
 
