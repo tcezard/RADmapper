@@ -7,6 +7,7 @@ Created on 20 October 2011
 import sys
 import os
 import logging
+from utils.utils_commands import get_output_stream_from_command
 
 from utils import utils_logging
 import command_runner
@@ -20,9 +21,9 @@ def run_merger(consenus_r1, contig_r2, merged_fa, alignment_report):
     return return_code
 
 
-def run_revseq(fasta_file, output_fastq):
+def run_revseq(fasta_file, output_fasta):
     revseq_bin = "revseq"
-    command = "%s -sequence %s -outseq %s" % (revseq_bin, fasta_file, output_fastq)
+    command = "%s -sequence %s -outseq %s" % (revseq_bin, fasta_file, output_fasta)
     return_code = command_runner.run_command(command)
     return return_code
 
@@ -109,16 +110,44 @@ def cigar_collapse(cigar):
     cigar_elements.append('%d%s' % (count, curr_c))
     return cigar_elements
 
+def run_flash(output_dir, fastq_1, fastq_2, overlap):
+    command="flash -m %s -d %s %s %s"%(overlap, output_dir,fastq_1,fastq_2)
+    return_code = command_runner.run_command(command)
+    if return_code !=0:
+        return None
+    out_extended=os.path.join(output_dir,"out.extendedFrags.fastq")
+    #if Flash finishes succesfully but nothing was merged
+    if os.stat(out_extended).st_size == 0:
+        return None
+    return out_extended
 
-def merge_2_contigs(consensus_name, contig_file1, contig_file2, output_dir):
+
+def extend_read1_consensus(fastq_1, fastq_2, extended_sequence_name, extended_sequence_file):
+    output_dir=os.path.dirname(fastq_1)
+    out_extended = run_flash(output_dir, fastq_1, fastq_2, 20)
+    if not out_extended:
+        out_extended = run_flash(output_dir, fastq_1, fastq_2, 10)
+    if not out_extended:
+        return None
+    command_array = ["cat %s | paste - - - - | cut -f 2  | sort | uniq -c | sort -nr |"%out_extended,
+                     " awk '{if($1>best){best=$1;if (length($2)>length(longest)){longest=$2}}} END{print longest}' |",
+                     """awk 'BEGIN{print "%s"} {print $0}'"""%extended_sequence_name,
+                     " > %s"%extended_sequence_file]
+    return_code = command_runner.run_command(' '.join(command_array))
+    if return_code !=0:
+        return None
+
+    if return_code !=0:
+        return None
+    return extended_sequence_file
+
+def merge_2_contigs(consensus_name, contig_file1, contig_file2, output_dir, allow_extension=True):
     contig_file2_revcomp = "%s_rev_com.fa" % (contig_file2)
     return_code = run_revseq(contig_file2, contig_file2_revcomp)
 
     merged_fa = os.path.join(output_dir, "%s_putativemerged.fa" % (consensus_name))
     alignment_report = os.path.join(output_dir, "%s_alignment_report.txt" % (consensus_name))
     results = None
-
-    return_code = run_merger(contig_file1, contig_file2, merged_fa, alignment_report)
 
     matches1 = mismatches1 = offset1 = matches2 = mismatches2 = offset2 = 0
     cigar1 = ""
@@ -163,7 +192,21 @@ def merge_2_contigs(consensus_name, contig_file1, contig_file2, output_dir):
         result_seq = merged_sequence.upper()
         results = (result_name, result_seq)
     else:
-        logging.info("Merging Failed")
+        parent_dir = os.path.dirname(output_dir)
+        fastq_1=os.path.join(parent_dir, consensus_name+"_1.fastq")
+        fastq_2=os.path.join(parent_dir, consensus_name+"_2.fastq")
+        if os.path.exists(fastq_1) and os.path.exists(fastq_2) and allow_extension:
+            logging.info("Merging Failed try extending consensus")
+            if os.path.exists(merged_fa):
+                os.remove(merged_fa)
+                os.remove(alignment_report)
+            extended_sequence_file = os.path.join(parent_dir, consensus_name + "_1_extended.fa")
+            if not os.path.exists(extended_sequence_file):
+                extend_read1_consensus(fastq_1, fastq_2, ">%s_extended"%consensus_name, extended_sequence_file)
+            return merge_2_contigs(consensus_name, extended_sequence_file, contig_file2, output_dir,
+                                   allow_extension=False)
+        else:
+            logging.info("Merging Failed")
         results = None
 
     if os.path.exists(merged_fa):
