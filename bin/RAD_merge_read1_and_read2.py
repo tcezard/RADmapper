@@ -202,9 +202,11 @@ def merge_2_contigs(consensus_name, contig_file1, contig_file2, output_dir, allo
                 os.remove(alignment_report)
             extended_sequence_file = os.path.join(parent_dir, consensus_name + "_1_extended.fa")
             if not os.path.exists(extended_sequence_file):
-                extend_read1_consensus(fastq_1, fastq_2, ">%s_extended"%consensus_name, extended_sequence_file)
-            return merge_2_contigs(consensus_name, extended_sequence_file, contig_file2, output_dir,
-                                   allow_extension=False)
+                extended_sequence_file = extend_read1_consensus(fastq_1, fastq_2, ">%s_extended"%consensus_name,
+                                                                extended_sequence_file)
+            if extended_sequence_file:
+                return merge_2_contigs(consensus_name, extended_sequence_file, contig_file2, output_dir,
+                                       allow_extension=False)
         else:
             logging.info("Merging Failed")
         results = None
