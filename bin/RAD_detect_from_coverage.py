@@ -3,6 +3,7 @@ Created on Mar 9, 2011
 
 @author: tcezard
 '''
+import os
 import sys
 import logging
 from optparse import OptionParser
@@ -13,10 +14,6 @@ from scipy import stats
 import numpy
 
 
-OUTPUT_TYPE_PHYLIP='phylip'
-OUTPUT_TYPE_STRUCTURE='structure'
-OUTPUT_TYPE_GENEPOP='genepop'
-OUTPUT_TYPE=[OUTPUT_TYPE_PHYLIP,OUTPUT_TYPE_STRUCTURE,OUTPUT_TYPE_GENEPOP]
 
 def read_pop_file(pop_file):
     sample2pop={}
@@ -71,54 +68,7 @@ def get_normalize_coverage(coverage_file, nb_sample_required=0):
     return all_markers, all_samples, all_samples_to_norm_coverage
 
 def detect_presence_absence_markers(pop_file , coverage_file, nb_sample_required=0):
-    sample2pop, pop2sample = read_pop_file(pop_file)
-    if len(pop2sample)!=2:
-        logging.critical('Presence/Absence Markers can only be search between two set of samples. Edit your population file to have two populations')
-        return -1
-    pop1,pop2 = pop2sample.keys()
-    samples_pop1 = pop2sample.get(pop1)
-    samples_pop2 = pop2sample.get(pop2)
-    
-    all_markers, all_samples, all_samples_to_norm_coverage = get_normalize_coverage(coverage_file, nb_sample_required)
-    
-    sample_errors =  set(sample2pop.keys()).difference(set(all_samples)) 
-    if len(sample_errors)>0:
-        logging.critical('%s samples (%s) from the population file not found in the coverage file'%(len(sample_errors), ', '.join(sample_errors)))
-        return -2
-    for i, marker in enumerate(all_markers):
-        out=[marker]
-        out_pop1=[]
-        out_pop2=[]
-        pop1_values = []
-        pop2_values = []
-        for sample in samples_pop1:
-            cov = all_samples_to_norm_coverage.get(sample)[i]
-            pop1_values.append(cov)
-            out_pop1.append(str(cov))
-        
-        for sample in samples_pop2:
-            cov = all_samples_to_norm_coverage.get(sample)[i]
-            pop2_values.append(cov)
-            out_pop2.append(str(cov))
-        pop1_nvalues = numpy.array(pop1_values)
-        pop1_nvalues_2 =pop1_nvalues*2
-        pop2_nvalues = numpy.array(pop2_values)
-        pop2_nvalues_2 = pop2_nvalues*2
-        t_stat, pvalue =  stats.ttest_ind(pop1_nvalues,pop2_nvalues)
-        #if pvalue<.05:
-        #    t_stat_comp1, pvalue_comp1 =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
-        #    if pvalue_comp1 >0.5:
-        #        fold=pop2_nvalues.mean()/pop1_nvalues.mean()
-        #        if fold < 2.2 and fold >1.8:
-        #            print ' '.join(out), fold, pop1_nvalues.mean(), pop2_nvalues.mean(), pvalue, pvalue_comp1
-
-
-        out.append(str(pop1_nvalues.mean()))
-        out.append(str(pop1_nvalues.std()))
-        out.append(str(pop2_nvalues.mean()))
-        out.append(str(pop2_nvalues.std()))
-
-        print "%s\t%s\t%s"%("\t".join(out),"\t".join(out_pop1),"\t".join(out_pop2))
+    pass
 
 def detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0):
     sample2pop, pop2sample = read_pop_file(pop_file)
@@ -135,7 +85,10 @@ def detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0):
     if len(sample_errors)>0:
         logging.critical('%s samples (%s) from the population file not found in the coverage file'%(len(sample_errors), ', '.join(sample_errors)))
         return -2
-    print "#contigs\tmean_male\tsd_male\tmean_female\tsd_female\t%s\t%s"%("\t".join(samples_pop1), "\t".join(samples_pop2))
+
+    header = ["#consensus", "mean_%s"%(pop1), "mean_%s"%(pop2), "fold_change",
+              "t_test_%s_eq_2X_%s"%(pop1,pop2), "t_test_%s_eq_%s"%(pop1,pop2)]
+    all_lines = [' '.join(header)]
     for i, marker in enumerate(all_markers):
         out=[marker]
         out_pop1=[]
@@ -156,19 +109,34 @@ def detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0):
         pop2_nvalues = numpy.array(pop2_values)
         pop2_nvalues_2 = pop2_nvalues*2
         t_stat, pvalue =  stats.ttest_ind(pop1_nvalues,pop2_nvalues)
-        #if pvalue<.05:
-        #    t_stat_comp1, pvalue_comp1 =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
-        #    if pvalue_comp1 >0.5:
-        #        fold=pop2_nvalues.mean()/pop1_nvalues.mean()
-        #        if fold < 2.2 and fold >1.8:
-        #            print ' '.join(out), fold, pop1_nvalues.mean(), pop2_nvalues.mean(), pvalue, pvalue_comp1
+        if pvalue<.05:
+            t_stat_comp1, pvalue_comp1 =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
+            if pvalue_comp1 >0.5:
+                fold=pop2_nvalues.mean()/pop1_nvalues.mean()
+                if fold < 2.2 and fold >1.8:
+                    out.append(str(fold))
+                    out.append(str(pop1_nvalues.mean()))
+                    out.append(str(pop2_nvalues.mean()))
+                    out.append(str(pvalue))
+                    out.append(str(pvalue_comp1))
+                    all_lines.append(' '.join(out))
 
-        out.append(str(male_values.get_mean()))
-        out.append(str(male_values.get_std_dev()))
-        out.append(str(female_values.get_mean()))
-        out.append(str(female_values.get_std_dev()))
+    return '\n'.join(all_lines)
 
-        print "%s\t%s\t%s"%("\t".join(out),"\t".join(out_male),"\t".join(out_female))
+
+from unittest import TestCase
+
+class Test_detect_from_coverage(TestCase):
+
+    def test_detect_hemizygous_markers(self):
+        base_path = os.path.dirname(os.path.dirname(__file__))
+        pop_file = os.path.join(base_path,'test_data/test.pop')
+        coverage_file = os.path.join(base_path,'test_data/test.coverage')
+        out = detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0)
+        self.assertEqual(out, """#consensus mean_M mean_F fold_change t_test_M_eq_2X_F t_test_M_eq_F
+consensus_10011 1.89177282354 17550.2369394 33201.0612885 1.99790388026e-06 0.595700239289
+consensus_10022 2.15435252769 9869.79273114 21263.0129181 3.68095404625e-06 0.565244738728""")
+
 
 def main():
     #initialize the logging
@@ -184,8 +152,8 @@ def main():
         sys.exit(1)
     if options.debug:
         utils_logging.init_logging(logging.DEBUG)
-    #detect_hemizygous_markers(options.pop_file, options.coverage_file)
-    detect_presence_absence_markers(options.pop_file, options.coverage_file)
+    detect_hemizygous_markers(options.pop_file, options.coverage_file)
+    #detect_presence_absence_markers(options.pop_file, options.coverage_file)
 
 def _prepare_optparser():
     """Prepare optparser object. New options will be added in this
