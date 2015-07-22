@@ -107,19 +107,19 @@ def detect_hemizygous_markers(pop_file , coverage_file, nb_sample_required=0):
         pop1_nvalues = numpy.array(pop1_values)
         pop1_nvalues_2 =pop1_nvalues*2
         pop2_nvalues = numpy.array(pop2_values)
-        pop2_nvalues_2 = pop2_nvalues*2
-        t_stat, pvalue =  stats.ttest_ind(pop1_nvalues,pop2_nvalues)
-        if pvalue<.05:
-            t_stat_comp1, pvalue_comp1 =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
-            if pvalue_comp1 >0.5:
-                fold=pop2_nvalues.mean()/pop1_nvalues.mean()
-                if fold < 2.2 and fold >1.8:
-                    out.append(str(fold))
-                    out.append(str(pop1_nvalues.mean()))
-                    out.append(str(pop2_nvalues.mean()))
-                    out.append(str(pvalue))
-                    out.append(str(pvalue_comp1))
-                    all_lines.append(' '.join(out))
+        #This compare the normalized values, we assume they should not be equal
+        t_stat_eq, pvalue_eq =  stats.ttest_ind(pop1_nvalues,pop2_nvalues)
+        #This compare the norm value with norm values * 2, we assume they should be equal
+        t_stat_2X, pvalue_2X =  stats.ttest_ind(pop1_nvalues_2,pop2_nvalues)
+        fold=pop2_nvalues.mean()/pop1_nvalues.mean()
+
+        if pvalue_eq<.05 and pvalue_2X >0.5 and fold < 2.2 and fold >1.8:
+            out.append(str(pop1_nvalues.mean()))
+            out.append(str(pop2_nvalues.mean()))
+            out.append(str(fold))
+            out.append(str(pvalue_2X))
+            out.append(str(pvalue_eq))
+            all_lines.append(' '.join(out))
 
     return '\n'.join(all_lines)
 
@@ -152,7 +152,7 @@ def main():
         sys.exit(1)
     if options.debug:
         utils_logging.init_logging(logging.DEBUG)
-    detect_hemizygous_markers(options.pop_file, options.coverage_file)
+    print detect_hemizygous_markers(options.pop_file, options.coverage_file)
     #detect_presence_absence_markers(options.pop_file, options.coverage_file)
 
 def _prepare_optparser():
