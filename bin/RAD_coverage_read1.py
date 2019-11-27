@@ -10,6 +10,8 @@ import logging
 import threading
 from optparse import OptionParser
 
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'lib'))
+
 from utils import utils_param, utils_logging
 from utils.parameters import Config_file_error
 from utils.utils_commands import get_output_stream_from_command
